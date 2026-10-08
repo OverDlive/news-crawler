@@ -61,11 +61,16 @@ class GuiTests(unittest.TestCase):
             buttons['자동 공유 시작'].invoke()
             wait_for(lambda: self.app.telegram.settings()['enabled'] and buttons['테스트 보내기'].cget('state') == 'normal')
             buttons['테스트 보내기'].invoke()
-            wait_for(lambda: any(method == 'sendMessage' for method, _ in calls))
+            # Wait for the background operation to commit and the editor to
+            # consume its completion before releasing mocks or deleting SQLite.
+            wait_for(lambda: buttons['테스트 보내기'].cget('state') == 'normal'
+                     and any(row['state'] == 'sent' for row in self.app.telegram.status()))
             self.assertEqual(next(fields['chat_id'] for method, fields in calls if method == 'sendMessage'), -100)
             for button in buttons.values():
                 self.assertLessEqual(button.winfo_rooty() + button.winfo_height(), win.winfo_rooty() + win.winfo_height())
             buttons['닫기'].invoke()
+            self.app.demo = True
+            wait_for(lambda: not self.app.telegram_busy and not self.app.kakao_busy)
 
     def test_telegram_editor_demo_blocks_network_and_closes_cleanly(self):
         self.app.telegram_settings()

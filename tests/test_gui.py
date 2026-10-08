@@ -16,6 +16,54 @@ from ui_theme import GAP, RADIUS, RoundedPanel
 
 
 class GuiTests(unittest.TestCase):
+    def test_settings_show_version_and_disable_checks_in_demo(self):
+        from tkinter import ttk
+        from version import VERSION
+        self.app.settings()
+        self.root.update()
+        win = self.app.settings_window
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+        widgets = list(descendants(win))
+        notebook = next(w for w in widgets if isinstance(w, ttk.Notebook))
+        update_tab = next(tab for tab in notebook.tabs() if notebook.tab(tab, 'text') == '프로그램 / 업데이트')
+        notebook.select(update_tab)
+        self.root.update()
+        version = next(w for w in widgets if w.winfo_name() == 'update_current_version')
+        self.assertIn(VERSION, version.cget('text'))
+        button = next(w for w in widgets if isinstance(w, ThemedButton) and w.cget('text') == '업데이트 확인')
+        self.assertEqual(button.cget('state'), 'disabled')
+
+    def test_settings_manual_update_check_displays_result_and_survives_reopen(self):
+        self.app.demo = False
+        self.app.next_fetch = time.monotonic() + 3600
+        with patch('app_updates.latest_release', return_value={'tag_name': 'v' + self.app.updates.current}):
+            self.app.settings()
+            win = self.app.settings_window
+            def descendants(widget):
+                for child in widget.winfo_children():
+                    yield child
+                    yield from descendants(child)
+            widgets = list(descendants(win))
+            status = next(w for w in widgets if w.winfo_name() == 'update_status')
+            button = next(w for w in widgets if isinstance(w, ThemedButton) and w.cget('text') == '업데이트 확인')
+            button.invoke()
+            deadline = time.monotonic() + 3
+            while '최신 버전' not in status.cget('text') and time.monotonic() < deadline:
+                self.root.update()
+                time.sleep(.02)
+            self.assertIn('최신 버전', status.cget('text'))
+            self.root.tk.call(win.protocol('WM_DELETE_WINDOW'))
+            self.app.settings()
+            status = next(w for w in descendants(self.app.settings_window) if w.winfo_name() == 'update_status')
+            self.assertIn('최신 버전', status.cget('text'))
+        self.app.demo = True
+        deadline = time.monotonic() + 3
+        while (self.app.telegram_busy or self.app.kakao_busy) and time.monotonic() < deadline:
+            time.sleep(.02)
+
     def test_telegram_token_only_workflow_discovers_selects_and_sends(self):
         from tkinter import ttk
         original_discover = self.app.telegram.discover
@@ -271,7 +319,16 @@ class GuiTests(unittest.TestCase):
 
     def tearDown(self):
         self.app.close()
-        self.directory.cleanup()
+        # Windows may briefly hold a just-closed directory handle (e.g. a file
+        # scanner). Retry cleanup; persistent locks still fail the test.
+        for attempt in range(20):
+            try:
+                self.directory.cleanup()
+                break
+            except PermissionError as exc:
+                if getattr(exc, 'winerror', None) not in (5, 32) or attempt == 19:
+                    raise
+                time.sleep(.1)
 
     def test_summary_worker_updates_open_preview_and_cards_without_blocking(self):
         import threading

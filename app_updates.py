@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -55,11 +56,7 @@ def download(url, path, limit):
             output.write(chunk)
 
 
-def stage_latest(executable, current=VERSION):
-    executable = Path(executable).resolve()
-    pending = executable.with_name(executable.name + '.pending.json')
-    if pending.exists():
-        return None
+def latest_release(current=VERSION):
     request = urllib.request.Request(
         f'https://api.github.com/repos/{REPOSITORY}/releases/latest',
         headers={'User-Agent': f'NewsMonitor/{current}', 'Accept': 'application/vnd.github+json'})
@@ -70,6 +67,20 @@ def stage_latest(executable, current=VERSION):
         if exc.code == 404:
             return None  # No public release yet.
         raise
+    if release.get('draft') or release.get('prerelease'):
+        return None
+    version_tuple(release['tag_name'])
+    return release
+
+
+def stage_latest(executable, current=VERSION, release=None):
+    executable = Path(executable).resolve()
+    pending = executable.with_name(executable.name + '.pending.json')
+    if pending.exists():
+        return None
+    release = release if release is not None else latest_release(current)
+    if release is None:
+        return None
     tag = release['tag_name']
     if release.get('draft') or release.get('prerelease') or version_tuple(tag) <= version_tuple(current):
         return None
@@ -113,6 +124,60 @@ def background_check():
         except Exception:
             logging.exception('Automatic update check failed; continuing current version')
     threading.Thread(target=worker, name='release-update', daemon=True).start()
+
+
+class UpdateChecker:
+    """Shared automatic/manual checks; UI reads snapshots on the Tk thread."""
+    def __init__(self, executable=None, current=VERSION, downloadable=None):
+        self.executable = Path(executable or sys.executable)
+        self.current = current
+        self.downloadable = getattr(sys, 'frozen', False) if downloadable is None else downloadable
+        self.lock = threading.Lock()
+        self.state = {'busy': False, 'latest': None, 'checked': 0,
+                      'message': '아직 업데이트를 확인하지 않았습니다.'}
+
+    def snapshot(self):
+        with self.lock:
+            return dict(self.state)
+
+    def check(self):
+        with self.lock:
+            if self.state['busy']:
+                return False
+            self.state.update(busy=True, message='새 버전을 확인하고 있습니다…')
+        def worker():
+            latest = None
+            try:
+                pending = self.executable.with_name(self.executable.name + '.pending.json')
+                if self.downloadable and pending.exists():
+                    latest = json.loads(pending.read_text(encoding='utf-8'))['version']
+                    version_tuple(latest)
+                    message = f'{latest} 다운로드 완료 · 프로그램을 종료하고 다시 실행하면 적용됩니다.'
+                else:
+                    release = latest_release(self.current)
+                    latest = release['tag_name'] if release else None
+                    if latest is None:
+                        message = '배포된 정식 버전이 없습니다.'
+                    elif version_tuple(latest) <= version_tuple(self.current):
+                        message = '최신 버전을 사용 중입니다.'
+                    elif not self.downloadable:
+                        message = f'{latest} 업데이트가 있습니다. EXE로 실행하면 자동으로 다운로드됩니다.'
+                    else:
+                        with self.lock:
+                            self.state.update(latest=latest, message=f'{latest} 다운로드 및 검증 중…')
+                        stage_latest(self.executable, self.current, release=release)
+                        message = f'{latest} 다운로드 완료 · 프로그램을 종료하고 다시 실행하면 적용됩니다.'
+                with self.lock:
+                    self.state.update(latest=latest, message=message, checked=time.time())
+            except Exception:
+                logging.exception('Update check failed; continuing current version')
+                with self.lock:
+                    self.state.update(message='업데이트를 확인하지 못했습니다. 인터넷 연결 및 저장 폴더 권한을 확인한 뒤 다시 시도하세요.', checked=time.time())
+            finally:
+                with self.lock:
+                    self.state['busy'] = False
+        threading.Thread(target=worker, name='release-update', daemon=True).start()
+        return True
 
 
 def ps_literal(value):

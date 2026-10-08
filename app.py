@@ -22,7 +22,7 @@ from news_summary import ArticleSummarizer
 from kakao_notifications import Notifications
 from telegram_notifications import TelegramNotifications
 from tk_runtime import create_root
-from app_updates import app_directory, apply_pending, background_check
+from app_updates import app_directory, apply_pending, UpdateChecker
 from version import VERSION
 from search_rules import RuleError, SearchRule
 from group_editor import build_group_editor
@@ -54,6 +54,7 @@ class NewsMonitor:
         self.theme = resolve_theme(self.config["theme"])
         self.colors = PALETTES[self.theme]
         self.demo = demo
+        self.updates = UpdateChecker()
         self.notifications = Notifications(directory)
         self.kakao_busy = False
         self.kakao_window = None
@@ -832,9 +833,10 @@ class NewsMonitor:
         box, rule_canvas = scroll_tab("키워드 / 검색 조건")
         monitor, monitor_canvas = scroll_tab("모니터링 설정")
         group_box, group_canvas = scroll_tab("발전그룹사 등록")
+        update_box, update_canvas = scroll_tab("프로그램 / 업데이트")
         notebook.insert(0, group_canvas.master)
         def wheel(event):
-            canvas = next(c for c in (rule_canvas, monitor_canvas, group_canvas) if str(c.master) == notebook.select())
+            canvas = next(c for c in (rule_canvas, monitor_canvas, group_canvas, update_canvas) if str(c.master) == notebook.select())
             if canvas.bbox("all") and canvas.bbox("all")[3] > canvas.winfo_height():
                 canvas.yview_scroll(-int(event.delta / 120), "units")
         win.bind("<MouseWheel>", wheel, add="+")
@@ -1040,6 +1042,37 @@ class NewsMonitor:
                         font=(FONT, 11), style="Monitor.TSpinbox").grid(row=index, column=1, padx=18)
         self.label(monitor, "F11 전체 화면 · Esc 해제 · ← → 페이지 이동", 10, self.colors["muted"]).pack(anchor="w", pady=20)
 
+        self.label(update_box, "프로그램 버전 및 자동 업데이트", 20).pack(anchor="w", pady=(0, 18))
+        self.label(update_box, f"현재 버전  v{VERSION}", 14, name='update_current_version').pack(anchor="w", pady=(0, GAP))
+        latest_label = self.label(update_box, "최신 버전  아직 확인하지 않음", 12, name='update_latest_version')
+        latest_label.pack(anchor="w", pady=(0, GAP))
+        checked_label = self.label(update_box, "마지막 확인  아직 없음", 10, self.colors['muted'])
+        checked_label.pack(anchor="w", pady=(0, GAP))
+        update_message = self.label(update_box, "", 12, wraplength=580, justify='left', name='update_status')
+        update_message.pack(anchor="w", fill='x', pady=(0, GAP))
+        self.label(update_box, "시작 후 및 6시간마다 새 버전을 확인합니다. 다운로드한 업데이트는 다음 실행 때 적용하며 설정과 뉴스는 유지합니다.",
+                   10, self.colors['muted'], wraplength=580, justify='left').pack(anchor='w', fill='x', pady=(0, GAP))
+        if self.demo:
+            self.label(update_box, "데모에서는 업데이트 확인과 다운로드를 하지 않습니다.", 10, self.colors['muted']).pack(anchor='w')
+        elif not getattr(sys, 'frozen', False):
+            self.label(update_box, "Python 소스 실행에서는 버전 확인만 가능합니다. 자동 적용은 EXE에서 사용할 수 있습니다.",
+                       10, self.colors['muted'], wraplength=580, justify='left').pack(anchor='w', fill='x')
+        update_button = self.button(update_box, "업데이트 확인", self.updates.check, True)
+        update_button.pack(anchor='w', pady=(GAP, 0))
+        update_timer = [None]
+
+        def refresh_updates():
+            if self.settings_window is not win:
+                return
+            state = self.updates.snapshot()
+            latest_label.configure(text=f"최신 버전  {state['latest'] or '아직 확인하지 않음'}")
+            checked_label.configure(text=f"마지막 확인  {time.strftime('%Y.%m.%d %H:%M:%S', time.localtime(state['checked'])) if state['checked'] else '아직 없음'}")
+            update_message.configure(text=state['message'])
+            update_button.configure(text='확인 중…' if state['busy'] else '업데이트 확인',
+                                    state='disabled' if self.demo or state['busy'] else 'normal')
+            update_timer[0] = win.after(250, refresh_updates)
+        refresh_updates()
+
         def refresh_ordinary():
             if editing_identity[0] is not None:
                 editing[0] = next((i for i, item in enumerate(draft) if item is editing_identity[0]), None)
@@ -1049,6 +1082,8 @@ class NewsMonitor:
         flush_groups = build_group_editor(self, group_box, draft, refresh_ordinary)
 
         def close():
+            if update_timer[0] is not None:
+                win.after_cancel(update_timer[0])
             self.settings_window = None
             self.last_rotate = time.monotonic()
             win.destroy()
@@ -1142,6 +1177,8 @@ class NewsMonitor:
         logging.info("News monitor closing")
         self.closed = True
         self.summary_stop.set()
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            self.root.tk.call(self.settings_window.protocol('WM_DELETE_WINDOW'))
         if self.telegram_window is not None and self.telegram_window.winfo_exists():
             self.root.tk.call(self.telegram_window.protocol('WM_DELETE_WINDOW'))
         if self.kakao_window is not None and self.kakao_window.winfo_exists():
@@ -1189,7 +1226,7 @@ def main():
         root.after(1200, app.close)
     if updates_enabled:
         def check_updates():
-            background_check()
+            app.updates.check()
             if not app.closed:
                 root.after(6 * 60 * 60 * 1000, check_updates)
         root.after(5000, check_updates)

@@ -3,6 +3,8 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -10,6 +12,63 @@ import app_updates as updates
 
 
 class UpdateTests(unittest.TestCase):
+    def wait_for_check(self, checker):
+        deadline = time.monotonic() + 3
+        while checker.snapshot()['busy'] and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertFalse(checker.snapshot()['busy'])
+
+    def test_manual_check_reports_latest_without_downloading_in_source_mode(self):
+        checker = updates.UpdateChecker(current='1.0.0', downloadable=False)
+        with patch.object(updates, 'latest_release', return_value=self.release()), \
+             patch.object(updates, 'stage_latest') as stage:
+            self.assertTrue(checker.check())
+            self.wait_for_check(checker)
+        stage.assert_not_called()
+        self.assertEqual(checker.snapshot()['latest'], 'v1.0.1')
+        self.assertIn('EXE', checker.snapshot()['message'])
+        self.assertGreater(checker.snapshot()['checked'], 0)
+
+    def test_checks_share_busy_state_and_prevent_duplicate_requests(self):
+        checker = updates.UpdateChecker(current='1.0.1', downloadable=False)
+        release = threading.Event()
+        with patch.object(updates, 'latest_release', side_effect=lambda current: (release.wait(2), self.release())[1]) as fetch:
+            self.assertTrue(checker.check())
+            self.assertFalse(checker.check())
+            release.set()
+            self.wait_for_check(checker)
+            self.assertEqual(fetch.call_count, 1)
+        self.assertIn('최신 버전', checker.snapshot()['message'])
+
+    def test_failed_check_reports_error_and_allows_retry(self):
+        checker = updates.UpdateChecker(downloadable=False)
+        with patch.object(updates, 'latest_release', side_effect=OSError('offline')), \
+             patch.object(updates.logging, 'exception'):
+            checker.check()
+            self.wait_for_check(checker)
+        self.assertIn('확인하지 못했습니다', checker.snapshot()['message'])
+        with patch.object(updates, 'latest_release', return_value=self.release('v' + checker.current)):
+            self.assertTrue(checker.check())
+            self.wait_for_check(checker)
+        self.assertIn('최신 버전', checker.snapshot()['message'])
+
+    def test_exe_check_reports_download_ready_and_shared_pending_status(self):
+        with tempfile.TemporaryDirectory() as folder:
+            executable = Path(folder) / 'NewsMonitor.exe'
+            checker = updates.UpdateChecker(executable, current='1.0.0', downloadable=True)
+            def stage(*args, **kwargs):
+                executable.with_name(executable.name + '.pending.json').write_text(json.dumps({'version': 'v1.0.1'}))
+                return 'v1.0.1'
+            with patch.object(updates, 'latest_release', return_value=self.release()), \
+                 patch.object(updates, 'stage_latest', side_effect=stage) as download:
+                checker.check()
+                self.wait_for_check(checker)
+                checker.check()
+                self.wait_for_check(checker)
+            self.assertEqual(download.call_count, 1)
+            self.assertIn('다운로드 완료', checker.snapshot()['message'])
+            self.assertIn('다시 실행', checker.snapshot()['message'])
+
     def release(self, tag='v1.0.1', **extra):
         return {'tag_name': tag, 'assets': [{'name': updates.ASSET_NAME},
                  {'name': updates.ASSET_NAME + '.sha256'}], **extra}
@@ -23,7 +82,7 @@ class UpdateTests(unittest.TestCase):
                 hashlib.sha256(binary).hexdigest().encode() if url.endswith('.sha256') else binary)
         with patch.object(updates.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(release).encode())), \
              patch.object(updates, 'download', side_effect=download):
-            return updates.stage_latest(Path(folder) / 'NewsMonitor.exe'), calls
+            return updates.stage_latest(Path(folder) / 'NewsMonitor.exe', current='1.0.0'), calls
 
     def test_new_release_is_verified_and_staged_without_replacing_exe(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -73,6 +132,7 @@ class UpdateTests(unittest.TestCase):
             source_pending = Path(folder) / 'NewsMonitor.exe.pending.json'
             source_pending.rename(exe.with_name(exe.name + '.pending.json'))
             with patch.object(updates.sys, 'frozen', True, create=True), \
+                 patch.object(updates, 'VERSION', '1.0.0'), \
                  patch.object(updates.subprocess, 'Popen') as launch:
                 self.assertTrue(updates.apply_pending(exe, ['--data-dir', r'C:\data with spaces']))
             self.assertEqual(launch.call_args.kwargs['creationflags'], updates.subprocess.CREATE_NO_WINDOW)
@@ -89,6 +149,7 @@ class UpdateTests(unittest.TestCase):
             staged = next(Path(folder).glob('.news-update-*.exe'))
             staged.write_bytes(b'tampered')
             with patch.object(updates.sys, 'frozen', True, create=True), \
+                 patch.object(updates, 'VERSION', '1.0.0'), \
                  patch.object(updates.subprocess, 'Popen') as launch:
                 with self.assertRaisesRegex(ValueError, '검증'):
                     updates.apply_pending(Path(folder) / 'NewsMonitor.exe')

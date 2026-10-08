@@ -25,8 +25,8 @@ def phrases(text):
     return list(dict.fromkeys(x.strip().strip('"').strip() for x in re.split(r'\s+OR\s+|[|,\n\r]', text, flags=re.I) if x.strip().strip('"').strip()))
 
 def validate_terms(values):
-    if not isinstance(values, list) or not 1 <= len(values) <= 60:
-        raise RuleError("검색어는 1~60개까지 등록할 수 있습니다.")
+    if not isinstance(values, list) or not 1 <= len(values) <= 200:
+        raise RuleError("검색어는 1~200개까지 등록할 수 있습니다.")
     if any(not isinstance(x, str) or not x.strip() or len(x) > 80 or '"' in x or any(ord(c) < 32 for c in x) for x in values):
         raise RuleError("각 검색어는 큰따옴표·줄바꿈 없이 1~80자로 입력해 주세요.")
     return list(dict.fromkeys(x.strip() for x in values))

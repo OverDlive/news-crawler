@@ -833,6 +833,21 @@ class NewsMonitor:
         box, rule_canvas = scroll_tab("키워드 / 검색 조건")
         monitor, monitor_canvas = scroll_tab("모니터링 설정")
         group_box, group_canvas = scroll_tab("발전그룹사 등록")
+        # Fill the viewport while allowing a minimum usable table height.
+        # The longer company-edit form retains the outer canvas scrollbar.
+        group_resize_job = [None]
+        def fit_groups():
+            group_resize_job[0] = None
+            item = group_canvas.find_all()[0]
+            height = max(group_canvas.winfo_height(), group_box.winfo_reqheight())
+            group_canvas.itemconfigure(item, width=group_canvas.winfo_width(), height=height)
+            group_canvas.configure(scrollregion=group_canvas.bbox('all'))
+        def resize_groups(event=None):
+            group_canvas.itemconfigure(group_canvas.find_all()[0], width=group_canvas.winfo_width())
+            if group_resize_job[0] is None:
+                group_resize_job[0] = group_canvas.after_idle(fit_groups)
+        group_canvas.bind('<Configure>', resize_groups)
+        group_box.bind('<Configure>', resize_groups)
         update_box, update_canvas = scroll_tab("프로그램 / 업데이트")
         notebook.insert(0, group_canvas.master)
         def wheel(event):

@@ -32,10 +32,10 @@ def build_group_editor(app, body, draft, redraw):
     summary = app.label(body, "", 11, colors['accent'], anchor="w", wraplength=600)
     summary.pack(fill="x", pady=4)
     view_container = tk.Frame(body, bg=colors['panel'])
-    view_container.pack(fill='x')
+    view_container.pack(fill='both', expand=True)
     list_view = tk.Frame(view_container, bg=colors['panel'])
     editor_view = tk.Frame(view_container, bg=colors['panel'])
-    list_view.pack(fill='x')
+    list_view.pack(fill='both', expand=True)
     body = list_view
     actions = tk.Frame(body, bg=colors['panel'])
     actions.pack(fill='x', pady=6)
@@ -48,12 +48,13 @@ def build_group_editor(app, body, draft, redraw):
              highlightthickness=1, highlightbackground=colors['border'], highlightcolor=colors['accent'],
              font=('맑은 고딕', 11)).pack(side='left', fill='x', expand=True, ipady=7)
     detail_row = tk.Frame(body, bg=colors['panel'])
-    detail_row.pack(fill='x')
+    detail_row.pack(fill='both', expand=True)
+    detail_row.rowconfigure(0, weight=1)
     detail_row.columnconfigure(0, weight=1, minsize=240, uniform='details')
     detail_row.columnconfigure(1, weight=1, minsize=300, uniform='details')
     table = tk.Frame(detail_row, bg=colors['border'], padx=1, pady=1)
     table.grid(row=0, column=0, sticky='nsew', padx=(0, 8))
-    tree = ttk.Treeview(table, name='company_list', columns=("topics", "state"), show="tree headings", height=5,
+    tree = ttk.Treeview(table, name='company_list', columns=("topics", "state"), show="tree headings", height=2,
                         displaycolumns=('state',), selectmode="browse", style='Company.Treeview')
     tree.heading('#0', text="  그룹사", anchor='w')
     tree.heading('topics', text="  모니터링 분류", anchor='w')
@@ -95,23 +96,27 @@ def build_group_editor(app, body, draft, redraw):
     tree.tag_configure('paused', foreground=colors['muted'])
     table_hint = app.label(body, '그룹사를 선택해 오른쪽에서 분류와 검색어를 확인하세요.',
                            10, colors['muted'], anchor='w', wraplength=650)
-    table_hint.pack(fill='x', pady=(2, 10))
+    table_hint.pack(side='bottom', fill='x', pady=(2, 10), before=detail_row)
     controls = tk.Frame(detail_row, bg=colors['input'], padx=10, pady=8)
     controls.grid(row=0, column=1, sticky='nsew')
     stacked = [None]
     def arrange_details(event):
-        compact = event.width < 700
+        compact = event.width < 560
         if compact == stacked[0]:
             return
         stacked[0] = compact
         if compact:
+            detail_row.columnconfigure(0, minsize=0)
+            detail_row.columnconfigure(1, minsize=0)
+            detail_row.rowconfigure(1, weight=1)
             table.grid(row=0, column=0, columnspan=2, padx=0, pady=(0, 8))
             controls.grid(row=1, column=0, columnspan=2)
-            tree.configure(height=3)
         else:
+            detail_row.columnconfigure(0, minsize=240)
+            detail_row.columnconfigure(1, minsize=300)
+            detail_row.rowconfigure(1, weight=0)
             table.grid(row=0, column=0, columnspan=1, padx=(0, 8), pady=0)
             controls.grid(row=0, column=1, columnspan=1)
-            tree.configure(height=5)
     detail_row.bind('<Configure>', arrange_details)
     selected_label = app.label(controls, '그룹사를 선택하면 분류와 검색어를 켜고 끌 수 있습니다.', 12,
                                colors['accent'], anchor='w', wraplength=370)
@@ -130,8 +135,8 @@ def build_group_editor(app, body, draft, redraw):
                                    font=('맑은 고딕', 11), state='disabled')
     category_check.pack(side='right')
     keyword_frame = tk.Frame(controls, bg=colors['input'])
-    keyword_frame.pack(fill='x')
-    keyword_tree = SmoothTermList(keyword_frame, name='monitor_terms', colors=colors, height=4)
+    keyword_frame.pack(fill='both', expand=True)
+    keyword_tree = SmoothTermList(keyword_frame, name='monitor_terms', colors=colors, height=2)
     keyword_tree.heading('#0', text='검색어', anchor='w')
     keyword_tree.heading('state', text='사용 상태')
     keyword_tree.column('#0', width=220, minwidth=140)
@@ -144,7 +149,7 @@ def build_group_editor(app, body, draft, redraw):
     keyword_tree.tag_configure('paused', foreground=colors['muted'])
     keyword_hint = app.label(controls, 'OFF 검색어는 이 그룹사의 수집·검색에서 제외됩니다. 변경 후 저장하고 적용하세요.',
                              10, colors['muted'], anchor='w', wraplength=370)
-    keyword_hint.pack(fill='x', pady=(6, 0))
+    keyword_hint.pack(side='bottom', fill='x', pady=(6, 0), before=keyword_frame)
     keyword_hint.bind('<Configure>', lambda event: keyword_hint.configure(wraplength=max(180, event.width)))
     body = editor_view
     back_row = tk.Frame(body, bg=colors['panel'])
@@ -455,7 +460,7 @@ def build_group_editor(app, body, draft, redraw):
     def show_view(view):
         for frame in (list_view, editor_view):
             frame.pack_forget()
-        view.pack(fill='x')
+        view.pack(fill='both', expand=True)
         view_container.update_idletasks()
         canvas = view_container.master.master
         if isinstance(canvas, tk.Canvas):

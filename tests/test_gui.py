@@ -910,6 +910,42 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(tree.get_children())
         self.assertFalse(terms.get_children())
 
+    def test_group_tables_resize_and_small_window_can_scroll_to_bottom(self):
+        self.app.settings()
+        self.root.update()
+        self.click_settings('전력 및 발전 그룹사 일괄 등록')
+        win = self.app.settings_window
+        widgets = self.group_widgets()
+        tree = next(w for w in widgets if w.winfo_name() == 'company_list')
+        terms = next(w for w in widgets if w.winfo_name() == 'monitor_terms')
+        canvas = terms.master
+        while not isinstance(canvas, tk.Canvas):
+            canvas = canvas.master
+        heights = []
+        for geometry in ('1000x850', '1000x1000', '1000x850'):
+            win.geometry(geometry)
+            self.root.update()
+            heights.append((tree.winfo_height(), terms.winfo_height()))
+            self.assertLessEqual(terms.winfo_rooty() + terms.winfo_height(),
+                                 canvas.winfo_rooty() + canvas.winfo_height())
+        for small, large, restored in zip(heights[0], heights[1], heights[2]):
+            self.assertGreater(large, small)
+            self.assertEqual(restored, small)
+        win.geometry('700x500')
+        self.root.update()
+        canvas.yview_moveto(1)
+        self.root.update()
+        self.assertLessEqual(terms.winfo_rooty() + terms.winfo_height(),
+                             canvas.winfo_rooty() + canvas.winfo_height())
+        save = next(w for w in widgets if isinstance(w, ThemedButton)
+                    and w.cget('text') == '저장하고 적용')
+        self.assertTrue(save.winfo_ismapped())
+        self.assertLessEqual(save.winfo_rooty() + save.winfo_height(),
+                             win.winfo_rooty() + win.winfo_height())
+        self.click_settings('조건·분류 추가')
+        self.click_settings('← 등록 목록 / ON·OFF')
+        self.assertAlmostEqual(canvas.yview()[0], 0, places=2)
+
     def test_terms_scroll_moves_rows_smoothly_and_stays_in_its_panel(self):
         from security_profiles import make_entries
         self.app.config['keywords'] += make_entries('한국전력', ['한전'],

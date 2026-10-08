@@ -6,6 +6,8 @@ import zipfile
 
 
 def prepare_tk():
+    if getattr(sys, "frozen", False):
+        return  # PyInstaller's runtime hook sets the bundled Tcl/Tk paths.
     bundled = Path(sys.base_prefix) / "tcl"
     for kind, variable, marker in (("tcl", "TCL_LIBRARY", "init.tcl"),
                                    ("tk", "TK_LIBRARY", "tk.tcl")):

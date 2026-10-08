@@ -1,0 +1,67 @@
+name: Windows EXE release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Stable release tag (e.g. v1.0.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build tools
+        run: python -m pip install -r requirements-build.txt
+      - name: Test
+        run: python -m unittest discover -s tests -v
+      - name: Build EXE and checksum
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.version || github.ref_name }}
+          RELEASE_REPO: ${{ github.repository }}
+        run: python scripts/build_release.py --version "$env:RELEASE_TAG" --repository "$env:RELEASE_REPO"
+      - name: Verify packaged GUI
+        run: python scripts/smoke_exe.py
+      - name: Verify real update replacement and restart
+        run: python scripts/smoke_update.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NewsMonitor-Windows
+          path: |
+            dist/NewsMonitor.exe
+            dist/NewsMonitor.exe.sha256
+          if-no-files-found: error
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: NewsMonitor-Windows
+          path: dist
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.inputs.version || github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        shell: bash
+        run: |
+          gh release create "$RELEASE_TAG" dist/NewsMonitor.exe dist/NewsMonitor.exe.sha256 --target "$RELEASE_COMMIT" --title "News Monitor $RELEASE_TAG" --notes "Windows portable EXE. Updates download automatically and apply on the next launch. Existing settings and news databases are preserved." --latest

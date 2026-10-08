@@ -11,3 +11,7 @@ tmp/
 *.log
 *.sqlite3
 *.sqlite3-*
+build/
+dist/
+.build-deps/
+.build-python/

@@ -9,6 +9,7 @@ import queue
 import sqlite3
 import threading
 import time
+import sys
 import tkinter as tk
 from tkinter import ttk, messagebox
 from tkinter import font as tkfont
@@ -21,6 +22,8 @@ from news_summary import ArticleSummarizer
 from kakao_notifications import Notifications
 from telegram_notifications import TelegramNotifications
 from tk_runtime import create_root
+from app_updates import app_directory, apply_pending, background_check
+from version import VERSION
 from search_rules import RuleError, SearchRule
 from group_editor import build_group_editor
 from ui_theme import GAP, PADDING, PALETTES, THEME_LABELS, RoundedPanel, ThemedButton, TextHint, resolve_theme
@@ -86,7 +89,7 @@ class NewsMonitor:
         self.tick_id = None
         self.refresh_id = None
         self.last_size = None
-        root.title("뉴스 모니터 · 키워드 대시보드" + (" · 데모" if demo else ""))
+        root.title(f"뉴스 모니터 · 키워드 대시보드 · v{VERSION}" + (" · 데모" if demo else ""))
         root.geometry("1280x900")
         root.minsize(950, 720)
         root.configure(bg=self.colors["bg"])
@@ -1157,12 +1160,20 @@ def main():
     parser.add_argument("--data-dir", type=Path, help="설정과 기사 저장 폴더")
     parser.add_argument("--smoke-test", action="store_true", help="GUI 생성 후 자동 종료")
     parser.add_argument("--fullscreen", action="store_true", help="전체 화면으로 시작")
+    parser.add_argument("--no-update", action="store_true", help="이번 실행에서 자동 업데이트 건너뛰기")
     args = parser.parse_args()
-    directory = args.data_dir or Path(__file__).resolve().parent / ("demo_data" if args.demo else "data")
+    directory = args.data_dir or app_directory() / ("demo_data" if args.demo else "data")
     directory.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO, handlers=[RotatingFileHandler(
         directory / "monitor.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")],
         format="%(asctime)s %(levelname)s %(message)s")
+    updates_enabled = getattr(sys, 'frozen', False) and not (args.demo or args.smoke_test or args.no_update)
+    if updates_enabled:
+        try:
+            if apply_pending():
+                return 0
+        except Exception:
+            logging.exception('Pending update failed; continuing current version')
     root = create_root()
     try:
         app = NewsMonitor(root, directory, demo=args.demo)
@@ -1176,6 +1187,12 @@ def main():
         app.toggle_fullscreen()
     if args.smoke_test:
         root.after(1200, app.close)
+    if updates_enabled:
+        def check_updates():
+            background_check()
+            if not app.closed:
+                root.after(6 * 60 * 60 * 1000, check_updates)
+        root.after(5000, check_updates)
     root.mainloop()
     return 0
 

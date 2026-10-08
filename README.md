@@ -5,6 +5,61 @@ Python 표준 라이브러리(Tkinter, SQLite)만 사용하므로 추가 패키�
 
 ## 실행
 
+### Windows EXE 실행 및 자동 업데이트
+
+Python 설치 없이 `NewsMonitor.exe`를 더블 클릭해 실행할 수 있습니다.
+[GitHub Releases](https://github.com/OverDlive/news-crawler/releases/latest)에서
+`NewsMonitor.exe`를 내려받아 쓰기 가능한 개인 폴더에 넣으세요.
+EXE 기본 저장소는 EXE 옆 `data/`이며, 기존 `data/` 폴더를 EXE 옆에 두면
+설정·기사·카카오/텔레그램 설정을 이어서 사용합니다. DPAPI 토큰은 기존 Windows 계정과 PC에서만 복호화됩니다.
+데모는 `NewsMonitor.exe --demo`, 전체 화면은 `NewsMonitor.exe --fullscreen`으로 실행합니다.
+
+- 실제 EXE는 시작 5초 후와 실행 중 6시간마다 GitHub의 최신 정식 릴리스를 확인합니다.
+- 현재보다 높은 `v숫자.숫자.숫자` 버전의 EXE를 백그라운드에서 다운로드하고 SHA-256을 검증합니다.
+- 다음 실행 시 대기 중인 업데이트를 적용하고 동일한 실행 인수로 다시 시작합니다.
+- 기존 EXE는 `NewsMonitor.exe.previous`로 보관합니다. 파일 교체 또는 재실행 명령 실패 시 복원합니다.
+- 사용자 데이터는 교체하지 않습니다. 통신 실패 시 기존 버전으로 계속 실행하며 `data/monitor.log`에 기록합니다.
+  교체 오류는 EXE 옆 `update.log`에 기록합니다.
+- `--no-update`로 이번 실행의 확인·적용을 건너뛸 수 있습니다. 데모·스모크 테스트·Python 소스 실행에서는 업데이트하지 않습니다.
+- 공개 저장소의 Releases가 필요합니다. 비공개 저장소용 GitHub 인증 토큰은 프로그램에 포함하지 않습니다.
+
+### 로컬 EXE 빌드
+
+Windows에서 Python 3.12와 Tkinter를 사용합니다. 일반 실행에는 외부 패키지가 필요 없지만 빌드에는 PyInstaller가 필요합니다.
+
+```powershell
+python -m pip install -r requirements-build.txt
+python scripts/build_release.py
+python scripts/smoke_exe.py
+python scripts/smoke_update.py
+```
+
+결과는 `dist/NewsMonitor.exe`와 `dist/NewsMonitor.exe.sha256`입니다.
+`data/`, 토큰, 로그, 감사 결과는 EXE에 포함하지 않습니다.
+빌드 방식은 [PyInstaller 공식 문서](https://pyinstaller.org/en/stable/usage.html)를 따릅니다.
+
+### GitHub Actions 자동 릴리스
+
+`.github/workflows/release.yml`은 버전 태그 push 또는 Actions의 `Windows EXE release` → `Run workflow`로 실행합니다.
+테스트 → Windows EXE 빌드 → 패키징된 GUI 실행 검증 → EXE와 SHA-256을 GitHub Releases에 게시합니다.
+빌드 버전과 업데이트 저장소는 태그 및 `github.repository`에서 자동 반영합니다.
+다른 저장소로 옮기면 해당 저장소에서 만든 EXE는 그 저장소를 확인합니다.
+메인 브랜치 push와 PR에는 별도의 테스트 워크플로가 실행됩니다.
+
+```powershell
+git push origin main
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+다음 배포는 새 버전 태그(예: `v1.0.1`)를 사용하세요. 같은 릴리스 버전을 덮어쓰지 않습니다.
+수동 실행의 `version`에도 `v1.0.1` 형태를 입력합니다.
+저장소 Settings → Actions에서 Actions 실행을 허용해야 합니다.
+게시 작업은 저장소의 기본 `GITHUB_TOKEN`과 `contents: write` 권한을 사용하며 별도 개인 토큰이 필요 없습니다.
+[GitHub 릴리스 게시 CLI 문서](https://cli.github.com/manual/gh_release_create)
+
+SHA-256은 다운로드 손상을 검사합니다. 릴리스 게시 권한이 배포 신뢰의 기준이며 EXE 코드 서명은 포함하지 않습니다.
+
 Python 3.10 이상과 Tkinter가 필요합니다. 이 PC에서는 Python과 Tkinter를 확인했습니다.
 Python 설치에 Tcl/Tk 스크립트가 ZIP으로만 포함된 경우, 프로그램 폴더의 `.tk-runtime/`에 해당 기본 런타임을 풀어서 사용합니다.
 

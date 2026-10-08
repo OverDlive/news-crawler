@@ -15,6 +15,7 @@ def open_kakao_editor(app):
         return
     c = app.colors
     win = app.kakao_window = tk.Toplevel(app.root)
+    app.configure_icon(win)
     win.title('뉴스 모니터 · 카카오 알림')
     win.geometry('980x860')
     win.minsize(860, 700)
@@ -239,6 +240,7 @@ def open_kakao_editor(app):
         if not user:
             return
         popup = tk.Toplevel(win)
+        app.configure_icon(popup)
         popup.title('카카오 알림 · 자동 갱신 설정')
         popup.transient(win)
         popup.configure(bg=c['bg'])

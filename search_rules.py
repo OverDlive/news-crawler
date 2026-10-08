@@ -202,7 +202,7 @@ class SearchRule:
         if (not isinstance(category, str) or not category.strip() or len(category) > 50
                 or any(ord(c) < 32 for c in category)
                 or not isinstance(entry.get("company"), str) or not entry["company"].strip()):
-            raise RuleError("그룹사와 모니터링 분류를 확인해 주세요.")
+            raise RuleError("기관와 모니터링 분류를 확인해 주세요.")
         disabled = entry.get("disabled_terms", [])
         if not isinstance(disabled, list) or any(term not in terms for term in disabled):
             raise RuleError("중지한 검색어가 분류 검색어 목록에 없습니다.")
@@ -214,6 +214,7 @@ class SearchRule:
                            "scope": entry.get("scope", "title_description")})
         self.scope = base.scope
         self.company = entry['company']
+        self.category = category
         self.aliases = aliases
         self.terms = terms
         def any_of(values):
@@ -240,8 +241,13 @@ class SearchRule:
         text = title if self.scope == "title" else title + " " + description
         text = normalize(text)
         if hasattr(self, 'company'):
-            return bool(self.company_matches(text)) and any(contains_term(term, text) for term in self.terms) and not any(
+            matched = bool(self.company_matches(text)) and any(contains_term(term, text) for term in self.terms) and not any(
                 contains_term(term, text) for term in self.exclusions)
+            if matched:
+                from incident_filter import SECURITY_CATEGORIES, incident_relevant
+                if self.category in SECURITY_CATEGORIES:
+                    return incident_relevant(title, description if self.scope != 'title' else '')
+            return matched
         return evaluate(self.tree, text)
 
     def company_matches(self, text):
@@ -276,7 +282,7 @@ class SearchRule:
         text = normalize(title if self.scope == 'title' else title + ' ' + description)
         aliases = self.company_matches(text)
         terms = [term for term in self.terms if contains_term(term, text)]
-        return '그룹사: ' + ', '.join(aliases) + ' / 검색어: ' + ', '.join(terms) if aliases and terms else ''
+        return '기관: ' + ', '.join(aliases) + ' / 검색어: ' + ', '.join(terms) if aliases and terms else ''
 
     def accepts(self, article):
         return not self.filter_locally or self.matches(article.title, article.description)

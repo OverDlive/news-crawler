@@ -200,6 +200,16 @@ class Store:
                 summary TEXT NOT NULL, basis TEXT NOT NULL, note TEXT NOT NULL,
                 content_url TEXT NOT NULL, checked REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS article_bodies (
+                url TEXT PRIMARY KEY REFERENCES articles(url) ON DELETE CASCADE,
+                body TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS body_comparisons (
+                left_url TEXT REFERENCES articles(url) ON DELETE CASCADE,
+                right_url TEXT REFERENCES articles(url) ON DELETE CASCADE,
+                left_hash TEXT NOT NULL, right_hash TEXT NOT NULL, score REAL NOT NULL,
+                PRIMARY KEY(left_url, right_url)
+            );
         """)
 
     def load_config(self):
@@ -222,6 +232,10 @@ class Store:
             config["auto_rotate"] = value.get("auto_rotate", True)
             theme = value.get("theme", "system")
             config["theme"] = theme if theme in ("system", "light", "dark") else "system"
+            for version_key in ('institution_catalog_version', 'financial_catalog_version'):
+                catalog_version = value.get(version_key)
+                if type(catalog_version) is int and catalog_version >= 0:
+                    config[version_key] = catalog_version
             seen = set()
             for entry in value.get("keywords", []):
                 name = entry["name"].strip()
@@ -268,7 +282,7 @@ class Store:
             self.db.execute("DELETE FROM checks WHERE keyword=?", (keyword,))
             self.db.execute("DELETE FROM articles WHERE url NOT IN (SELECT url FROM matches)")
 
-    def list_articles(self, keywords, hours=24, now=None):
+    def list_articles(self, keywords, hours=24, now=None, *, grouped=True, rules=None):
         if not keywords:
             return []
         now = time.time() if now is None else now
@@ -287,8 +301,36 @@ class Store:
         names = ("url", "title", "source", "published", "description", "discovered")
         summaries = {row[0]: dict(zip(('summary', 'summary_basis', 'summary_note', 'content_url'), row[1:]))
                      for row in self.db.execute('SELECT url, summary, basis, note, content_url FROM summaries')}
-        return deduplicate([{**dict(zip(names, row)), **summaries.get(row[0], {}),
-                             "keywords": tags.get(row[0], [])} for row in rows])
+        bodies = dict(self.db.execute('SELECT url, body FROM article_bodies'))
+        articles = [{**dict(zip(names, row)), **summaries.get(row[0], {}),
+                     'body': bodies.get(row[0], ''),
+                     "keywords": tags.get(row[0], [])} for row in rows]
+        if rules is not None:
+            active_rules = {entry['name']: SearchRule(entry) for entry in rules}
+            for article in articles:
+                article['keywords'] = [name for name in article['keywords']
+                                       if name in active_rules and (not active_rules[name].filter_locally
+                                           or active_rules[name].matches(article['title'], article['description']))]
+            articles = [article for article in articles if article['keywords']]
+        if not grouped:
+            return articles
+        from news_similarity import fingerprint
+        hashes = {r['url']: fingerprint(r['body']) for r in articles if r['body']}
+        scores = {(a, b): score for a, b, ah, bh, score in self.db.execute(
+            'SELECT left_url, right_url, left_hash, right_hash, score FROM body_comparisons')
+                  if hashes.get(a) == ah and hashes.get(b) == bh}
+        return deduplicate(articles, scores)
+
+    def comparison_cache(self):
+        return {tuple(row) for row in self.db.execute(
+            'SELECT left_url, right_url, left_hash, right_hash FROM body_comparisons')}
+
+    def save_comparisons(self, results):
+        with self.db:
+            for a, b, ah, bh, score in results:
+                self.db.execute('''INSERT OR REPLACE INTO body_comparisons
+                    SELECT ?, ?, ?, ?, ? WHERE EXISTS(SELECT 1 FROM articles WHERE url=?)
+                    AND EXISTS(SELECT 1 FROM articles WHERE url=?)''', (a, b, ah, bh, score, a, b))
 
     def summary_candidates(self, keywords, hours=24, now=None, limit=5):
         if not keywords:
@@ -299,7 +341,9 @@ class Store:
             SELECT DISTINCT a.url, a.title, a.source, a.description, a.published FROM articles a
             JOIN matches m ON m.url=a.url LEFT JOIN summaries s ON s.url=a.url
             WHERE m.keyword IN ({slots}) AND a.published BETWEEN ? AND ?
-            AND (s.url IS NULL OR (s.basis != 'body' AND s.checked < ?))
+            AND (s.url IS NULL OR (s.basis != 'body' AND s.checked < ?)
+                 OR (s.basis = 'body' AND NOT EXISTS
+                     (SELECT 1 FROM article_bodies b WHERE b.url=a.url)))
             ORDER BY a.published DESC LIMIT ?
         ''', (*keywords, now - hours * 3600, now + 300, now - 86400, limit)).fetchall()
         return [dict(zip(('url', 'title', 'source', 'description', 'published'), row)) for row in rows]
@@ -311,6 +355,9 @@ class Store:
                 SELECT url, ?, ?, ?, ?, ? FROM articles WHERE url=?''',
                 (summary.text, summary.basis, summary.note, summary.content_url,
                  time.time() if now is None else now, url))
+            if getattr(summary, 'body', ''):
+                self.db.execute('''INSERT OR REPLACE INTO article_bodies
+                    SELECT url, ? FROM articles WHERE url=?''', (summary.body, url))
 
     def get_summary(self, url):
         row = self.db.execute('SELECT summary, basis, note, content_url FROM summaries WHERE url=?', (url,)).fetchone()

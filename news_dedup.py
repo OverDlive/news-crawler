@@ -82,17 +82,28 @@ def same_story(left, right):
                 and description_score >= .68))
 
 
-def deduplicate(rows):
+def deduplicate(rows, body_matches=None):
     """Rows arrive newest first. Match representatives, avoiding similarity chains."""
     representatives = []
+    body_matches = body_matches or {}
+    def matches(left, right):
+        key = tuple(sorted((left['url'], right['url'])))
+        if key in body_matches:
+            return body_matches[key] >= .82
+        return same_story(left, right)
     for row in rows:
-        match = next((item for item in representatives if same_story(item, row)), None)
+        # Full bodies belong in the extraction cache, not cards/notification JSON.
+        row = {key: value for key, value in row.items() if key != 'body'}
+        match = next((item for item in representatives
+                      if all(matches(member, row) for member in item['related_articles'])), None)
         if match is None:
             representatives.append({**row, 'keywords': list(row['keywords']),
-                                    'related_count': 1, 'sources': [row['source']]})
+                                    'related_count': 1, 'sources': [row['source']],
+                                    'related_articles': [dict(row)]})
         else:
             match['keywords'] = list(dict.fromkeys((*match['keywords'], *row['keywords'])))
             match['discovered'] = min(match['discovered'], row['discovered'])
             match['related_count'] += 1
             match['sources'] = list(dict.fromkeys((*match['sources'], row['source'])))
+            match['related_articles'].append(dict(row))
     return representatives

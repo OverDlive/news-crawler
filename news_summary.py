@@ -16,6 +16,7 @@ class Summary:
     basis: str
     note: str
     content_url: str = ''
+    body: str = ''
 
 
 class ArticleHTML(HTMLParser):
@@ -174,7 +175,7 @@ class ArticleSummarizer:
             if len(body) >= 100:
                 text = summarize(body, row['title'])
                 if text:
-                    return Summary(text, 'body', '기사 본문 핵심 문장 자동 발췌', url)
+                    return Summary(text, 'body', '기사 본문 핵심 문장 자동 발췌', url, body)
         except Exception:
             note = '원문 접근 실패 또는 본문 확인 불가'
         description = row.get('description', '').strip()

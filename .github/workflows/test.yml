@@ -17,4 +17,5 @@ jobs:
       - name: Set desktop size for GUI layout tests
         shell: powershell
         run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
+      - run: python -m pip install -r requirements.txt
       - run: python scripts/run_tests.py

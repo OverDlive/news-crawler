@@ -3,8 +3,10 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from tkinter import font as tkfont
 from pathlib import Path
-from security_profiles import COMPANIES, TOPICS, phrases, make_entries, parse_template, validate_terms
+from security_profiles import (INSTITUTIONS, COMPANIES, TOPICS, phrases, make_entries,
+                               parse_template, validate_terms, FINANCIAL_TOPICS)
 from search_rules import RuleError, SearchRule
+from institution_catalog import MAX_INSTITUTIONS, FINANCIAL_INSTITUTIONS
 from ui_theme import TextHint
 from smooth_list import SmoothTermList
 
@@ -24,8 +26,8 @@ def build_group_editor(app, body, draft, redraw):
         if item.get('profile') == 'company_topic':
             topic_defaults.setdefault(item['category'], item['terms'])
             enabled_topics.setdefault(item['category'], tk.BooleanVar(value=False))
-    app.label(body, "그룹사 모니터링 조건", 17).pack(anchor="w")
-    app.label(body, "그룹사를 선택해 분류·검색어 ON/OFF · 변경 후 저장하고 적용", 10,
+    app.label(body, "기관 모니터링 조건", 17).pack(anchor="w")
+    app.label(body, "기관을 선택해 분류·검색어 ON/OFF · 변경 후 저장하고 적용", 10,
               colors['muted'], wraplength=700).pack(anchor="w", pady=4)
     quick = tk.Frame(body, bg=colors['panel'])
     quick.pack(fill="x", pady=10)
@@ -41,7 +43,7 @@ def build_group_editor(app, body, draft, redraw):
     actions.pack(fill='x', pady=6)
     search_row = tk.Frame(body, bg=colors['panel'])
     search_row.pack(fill='x', pady=(10, 8))
-    app.label(search_row, '등록 그룹사 찾기', 11, colors['muted']).pack(side='left', padx=(0, 12))
+    app.label(search_row, '등록 기관 찾기', 11, colors['muted']).pack(side='left', padx=(0, 12))
     search = tk.StringVar()
     tk.Entry(search_row, name='company_filter', textvariable=search, bg=colors['input'],
              fg=colors['fg'], insertbackground=colors['fg'], relief='flat', bd=0,
@@ -56,7 +58,7 @@ def build_group_editor(app, body, draft, redraw):
     table.grid(row=0, column=0, sticky='nsew', padx=(0, 8))
     tree = ttk.Treeview(table, name='company_list', columns=("topics", "state"), show="tree headings", height=2,
                         displaycolumns=('state',), selectmode="browse", style='Company.Treeview')
-    tree.heading('#0', text="  그룹사", anchor='w')
+    tree.heading('#0', text="  기관", anchor='w')
     tree.heading('topics', text="  모니터링 분류", anchor='w')
     tree.heading('state', text="사용 상태", anchor='center')
     tree.column('#0', width=150, minwidth=110, stretch=True, anchor='w')
@@ -94,7 +96,7 @@ def build_group_editor(app, body, draft, redraw):
     tree.tag_configure('even', background=colors['panel'])
     tree.tag_configure('odd', background=colors['input'])
     tree.tag_configure('paused', foreground=colors['muted'])
-    table_hint = app.label(body, '그룹사를 선택해 오른쪽에서 분류와 검색어를 확인하세요.',
+    table_hint = app.label(body, '기관을 선택해 오른쪽에서 분류와 검색어를 확인하세요.',
                            10, colors['muted'], anchor='w', wraplength=650)
     table_hint.pack(side='bottom', fill='x', pady=(2, 10), before=detail_row)
     controls = tk.Frame(detail_row, bg=colors['input'], padx=10, pady=8)
@@ -118,7 +120,7 @@ def build_group_editor(app, body, draft, redraw):
             table.grid(row=0, column=0, columnspan=1, padx=(0, 8), pady=0)
             controls.grid(row=0, column=1, columnspan=1)
     detail_row.bind('<Configure>', arrange_details)
-    selected_label = app.label(controls, '그룹사를 선택하면 분류와 검색어를 켜고 끌 수 있습니다.', 12,
+    selected_label = app.label(controls, '기관을 선택하면 분류와 검색어를 켜고 끌 수 있습니다.', 12,
                                colors['accent'], anchor='w', wraplength=370)
     selected_label.pack(fill='x')
     selected_label.bind('<Configure>', lambda event: selected_label.configure(wraplength=max(180, event.width)))
@@ -147,15 +149,15 @@ def build_group_editor(app, body, draft, redraw):
     keyword_scroll.pack(side='right', fill='y')
     keyword_tree.pack(side='left', fill='both', expand=True)
     keyword_tree.tag_configure('paused', foreground=colors['muted'])
-    keyword_hint = app.label(controls, 'OFF 검색어는 이 그룹사의 수집·검색에서 제외됩니다. 변경 후 저장하고 적용하세요.',
+    keyword_hint = app.label(controls, 'OFF 검색어는 이 기관의 수집·검색에서 제외됩니다. 변경 후 저장하고 적용하세요.',
                              10, colors['muted'], anchor='w', wraplength=370)
     keyword_hint.pack(side='bottom', fill='x', pady=(6, 0), before=keyword_frame)
     keyword_hint.bind('<Configure>', lambda event: keyword_hint.configure(wraplength=max(180, event.width)))
     body = editor_view
     back_row = tk.Frame(body, bg=colors['panel'])
     back_row.pack(fill='x', pady=(0, 8))
-    app.label(body, '그룹사 추가 / 조건 편집', 15).pack(anchor='w', pady=(8, 4))
-    app.label(body, '이름·약칭 중 하나 AND 분류 검색어 중 하나 · 예: 한전 + 안전 사고(화재, 산업재해)',
+    app.label(body, '기관 추가 / 조건 편집', 15).pack(anchor='w', pady=(8, 4))
+    app.label(body, '이름·약칭 중 하나 AND 분류 검색어 중 하나 · 예: 행안부 + 개인정보 유출',
               10, colors['accent'], wraplength=650).pack(anchor='w', pady=(0, 8))
     def field(label, variable, widget_name):
         app.label(body, label, 11, colors['muted']).pack(anchor="w", pady=(8, 3))
@@ -163,21 +165,21 @@ def build_group_editor(app, body, draft, redraw):
         widget.pack(fill="x", ipady=6)
         TextHint(widget, lambda x, y: widget.get(), colors)
         return widget
-    presets = app.combobox(body, values=list(COMPANIES), state="readonly", font=("맑은 고딕", 11), style='Monitor.TCombobox')
+    presets = app.combobox(body, values=list(INSTITUTIONS), state="readonly", font=("맑은 고딕", 11), style='Monitor.TCombobox')
     presets.pack(fill="x", pady=6)
     def choose(event=None):
         selected[0] = None
         tree.selection_remove(*tree.selection())
         name.set(presets.get())
-        aliases.set(" | ".join(COMPANIES[presets.get()]))
+        aliases.set(" | ".join(INSTITUTIONS[presets.get()]))
         exclude.set("")
         for var in enabled_topics.values():
             var.set(True)
         refresh_controls()
     presets.bind('<<ComboboxSelected>>', choose)
-    field("그룹사 이름 (직접 입력하거나 위 목록에서 선택)", name, "company_name")
+    field("기관 이름 (직접 입력하거나 위 목록에서 선택)", name, "company_name")
     field("검색 이름·약칭 ( | 또는 쉼표로 구분 · 여러 단어의 문구는 그대로 입력)", aliases, "company_aliases")
-    app.label(body, "그룹사에 연결할 분류 · 체크 해제는 연결 제거, 일시 중지는 위의 분류 ON/OFF", 11,
+    app.label(body, "기관에 연결할 분류 · 체크 해제는 연결 제거, 일시 중지는 위의 분류 ON/OFF", 11,
               colors['muted'], wraplength=650).pack(anchor="w", pady=(14, 4))
     topic_box = tk.Frame(body, bg=colors['panel'])
     topic_box.pack(fill='x')
@@ -191,7 +193,7 @@ def build_group_editor(app, body, draft, redraw):
     for category, defaults in topic_defaults.items():
         initial = next((item['terms'] for item in draft if item.get('profile') == 'company_topic' and item['category'] == category), defaults)
         add_topic_widget(category, initial)
-    app.label(body, '공통 검색어 목록 · 수정하면 해당 분류를 사용하는 모든 그룹사에 적용됩니다.',
+    app.label(body, '공통 검색어 목록 · 수정하면 해당 분류를 사용하는 모든 기관에 적용됩니다.',
               10, colors['muted'], wraplength=650).pack(anchor='w', pady=4)
     new_category = tk.StringVar()
     new_terms = tk.StringVar()
@@ -199,7 +201,7 @@ def build_group_editor(app, body, draft, redraw):
     field('분류 검색어 · 예: 산업재해 | 화재 | 안전 사고', new_terms, 'new_category_terms')
     add_category_row = tk.Frame(body, bg=colors['panel'])
     add_category_row.pack(fill='x', pady=6)
-    field("이 그룹사의 제외어 (쉼표로 구분 · 예: 주가, 채용)", exclude, "company_exclude")
+    field("이 기관의 제외어 (쉼표로 구분 · 예: 주가, 채용)", exclude, "company_exclude")
     app.combobox(body, textvariable=scope, values=("제목 + RSS 설명", "제목만"), state="readonly", style='Monitor.TCombobox').pack(anchor="w", pady=8)
     app.label(body, "제목·RSS 설명의 문구 포함을 검사합니다. 기사 전문은 검사하지 않습니다.\nKPS·KDN 등 짧은 약칭으로 잡음이 생기면 약칭 목록에서 삭제하세요.", 10, colors['muted'], justify="left", wraplength=600).pack(fill="x", pady=6)
     sample = tk.StringVar()
@@ -258,12 +260,12 @@ def build_group_editor(app, body, draft, redraw):
         else:
             selected[0] = None
         tree.yview_moveto(position)
-        table_hint.configure(text=(f'{len(visible)} / {len(current)}개 그룹사 · 선택해 분류·검색어 확인 · 더블클릭해 조건 편집'
-                                   if visible else '일치하는 그룹사가 없습니다. 이름·약칭을 확인해 주세요.'
-                                   if current else '등록된 그룹사가 없습니다. 일괄 등록 또는 아래 입력란에서 추가해 주세요.'))
+        table_hint.configure(text=(f'{len(visible)} / {len(current)}개 기관 · 선택해 분류·검색어 확인 · 더블클릭해 조건 편집'
+                                   if visible else '일치하는 기관이 없습니다. 이름·약칭을 확인해 주세요.'
+                                   if current else '등록된 기관이 없습니다. 일괄 등록 또는 아래 입력란에서 추가해 주세요.'))
         count = sum(map(len, current.values()))
         active = sum(item['enabled'] for rules in current.values() for item in rules)
-        summary.configure(text=f"등록 {len(current)}개 그룹사 · 조건 {count}개 중 {active}개 ON · 저장하고 적용 시 반영")
+        summary.configure(text=f"등록 {len(current)}개 기관 · 조건 {count}개 중 {active}개 ON · 저장하고 적용 시 반영")
         redraw()
         refresh_controls()
     search.trace_add('write', lambda *args: draw())
@@ -282,9 +284,9 @@ def build_group_editor(app, body, draft, redraw):
         company = rules[0]['company']
         existing = groups()
         if old and old != company and company in existing:
-            raise RuleError("이미 등록된 그룹사 이름입니다.")
-        if company not in existing and len(existing) >= 40:
-            raise RuleError("그룹사는 최대 40개까지 등록할 수 있습니다.")
+            raise RuleError("이미 등록된 기관 이름입니다.")
+        if company not in existing and len(existing) >= MAX_INSTITUTIONS:
+            raise RuleError("기관은 최대 40개까지 등록할 수 있습니다.")
         previous = {x['category']: x for x in existing.get(old or company, [])}
         for item in rules:
             prior = previous.get(item['category'], {})
@@ -304,7 +306,7 @@ def build_group_editor(app, body, draft, redraw):
             show_list()
             return True
         except RuleError as exc:
-            messagebox.showwarning('그룹사 설정', str(exc), parent=parent)
+            messagebox.showwarning('기관 설정', str(exc), parent=parent)
             return False
     def select(event=None):
         if not tree.selection():
@@ -352,7 +354,7 @@ def build_group_editor(app, body, draft, redraw):
         if category_var.get() not in categories:
             category_var.set(categories[0] if categories else '')
         selected_label.configure(text=f"{selected[0]} · 분류별 모니터링" if rules else
-                                  '그룹사를 선택하면 분류와 검색어를 켜고 끌 수 있습니다.')
+                                  '기관을 선택하면 분류와 검색어를 켜고 끌 수 있습니다.')
         position = keyword_tree.yview()[0]
         keyword_tree.delete(*keyword_tree.get_children())
         rule = current_rule()
@@ -369,7 +371,7 @@ def build_group_editor(app, body, draft, redraw):
                                    + ('분류 ON: 선택한 검색어를 수집합니다.' if rule['enabled'] else '분류 OFF: 이 분류의 수집이 중지됩니다.')
                                    + ' · 저장하고 적용 시 반영')
         else:
-            keyword_hint.configure(text='등록 목록에서 그룹사를 선택해 주세요. 변경은 저장하고 적용 시 반영됩니다.')
+            keyword_hint.configure(text='등록 목록에서 기관을 선택해 주세요. 변경은 저장하고 적용 시 반영됩니다.')
     def toggle_category():
         rule = current_rule()
         if rule:
@@ -403,7 +405,7 @@ def build_group_editor(app, body, draft, redraw):
         try:
             category = new_category.get().strip()
             terms = validate_terms(phrases(new_terms.get()))
-            make_entries('그룹사', ['그룹사'], {category: terms})
+            make_entries('기관', ['기관'], {category: terms})
             if category.casefold() in {key.casefold() for key in topic_widgets}:
                 raise RuleError('이미 있는 분류입니다. 위의 검색어 목록에서 수정해 주세요.')
             if len(topic_widgets) >= 12:
@@ -414,7 +416,7 @@ def build_group_editor(app, body, draft, redraw):
             new_category.set('')
             new_terms.set('')
             preview()
-            summary.configure(text=f"‘{category}’ 분류 추가됨 · 그룹사 등록 / 수정 또는 저장하고 적용을 눌러 연결하세요.")
+            summary.configure(text=f"‘{category}’ 분류 추가됨 · 기관 등록 / 수정 또는 저장하고 적용을 눌러 연결하세요.")
         except RuleError as exc:
             messagebox.showwarning('분류 추가', str(exc), parent=parent)
             return False
@@ -430,14 +432,14 @@ def build_group_editor(app, body, draft, redraw):
             raise
         clear()
         draw()
-    def all_presets():
+    def all_presets(catalog=INSTITUTIONS):
         try:
             values = topics()
-            batch(COMPANIES, {key: values[key] for key, var in enabled_topics.items() if var.get()})
+            batch(catalog, {key: values[key] for key, var in enabled_topics.items() if var.get()})
         except RuleError as exc:
-            messagebox.showwarning('그룹사 설정', str(exc), parent=parent)
+            messagebox.showwarning('기관 설정', str(exc), parent=parent)
     def import_file():
-        path = filedialog.askopenfilename(parent=parent, title='발전그룹사 키워드 텍스트 불러오기', filetypes=[('텍스트 파일', '*.txt')])
+        path = filedialog.askopenfilename(parent=parent, title='기관 키워드 텍스트 불러오기', filetypes=[('텍스트 파일', '*.txt')])
         if not path:
             return
         try:
@@ -455,8 +457,16 @@ def build_group_editor(app, body, draft, redraw):
                 widget.insert('1.0', ' | '.join(values[key]))
         except (OSError, UnicodeError, RuleError) as exc:
             messagebox.showwarning('파일 불러오기', str(exc), parent=parent)
-    app.button(quick, '전력 및 발전 그룹사 일괄 등록', all_presets, True).pack(side='left', padx=(0, 8))
+    app.button(quick, '전체 기관 일괄 등록', all_presets, True).pack(side='left', padx=(0, 8))
+    def financial_presets():
+        try:
+            batch(FINANCIAL_INSTITUTIONS, FINANCIAL_TOPICS)
+        except RuleError as exc:
+            messagebox.showwarning('기관 설정', str(exc), parent=parent)
+    app.button(quick, '금융권 등록', financial_presets).pack(side='left', padx=(0, 8))
+    app.button(quick, '발전사 등록', lambda: all_presets(COMPANIES)).pack(side='left', padx=(0, 8))
     app.button(quick, '텍스트 파일 불러오기', import_file).pack(side='left')
+    app.flow_buttons(quick)
     def show_view(view):
         for frame in (list_view, editor_view):
             frame.pack_forget()
@@ -473,16 +483,16 @@ def build_group_editor(app, body, draft, redraw):
         body.nametowidget('company_name').focus_set()
     def edit_group():
         if selected[0] is None:
-            summary.configure(text='먼저 목록에서 편집할 그룹사를 선택해 주세요.')
+            summary.configure(text='먼저 목록에서 편집할 기관을 선택해 주세요.')
             return
         load_company_form()
         show_view(editor_view)
     tree.bind('<Double-1>', lambda event: edit_group())
     app.button(back_row, '← 등록 목록 / ON·OFF', show_list).pack(side='left')
-    for label, command in [('새 그룹사', new_group), ('조건·분류 추가', edit_group), ('전체 ON/OFF', toggle), ('그룹사 삭제', delete)]:
+    for label, command in [('새 기관', new_group), ('조건·분류 추가', edit_group), ('전체 ON/OFF', toggle), ('기관 삭제', delete)]:
         app.button(actions, label, command).pack(side='left')
     app.flow_buttons(actions)
-    app.button(add_category_row, '그룹사 등록 / 수정', register).pack(side='right')
+    app.button(add_category_row, '기관 등록 / 수정', register).pack(side='right')
     def flush():
         if new_category.get().strip() or new_terms.get().strip():
             if not add_category():

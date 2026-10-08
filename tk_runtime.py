@@ -39,5 +39,10 @@ def prepare_tk():
 
 def create_root():
     prepare_tk()
+    if sys.platform == "win32":
+        # Give source and packaged launches their own taskbar icon/group.
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "NewsMonitor.Desktop")
     import tkinter
     return tkinter.Tk()

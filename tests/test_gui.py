@@ -16,6 +16,165 @@ from ui_theme import GAP, RADIUS, RoundedPanel
 
 
 class GuiTests(unittest.TestCase):
+    def test_all_editor_and_preview_windows_receive_shared_icon(self):
+        calls = []
+        original = tk.Toplevel.iconphoto
+
+        def record(window, default, *images):
+            calls.append((window, default, images))
+            return original(window, default, *images)
+
+        with patch.object(tk.Toplevel, 'iconphoto', record):
+            self.app.settings()
+            settings = self.app.settings_window
+            self.root.tk.call(settings.protocol('WM_DELETE_WINDOW'))
+            self.app.preview(self.app.rows[0])
+            preview = next(w for w in self.root.winfo_children() if isinstance(w, tk.Toplevel))
+            self.root.tk.call(preview.protocol('WM_DELETE_WINDOW'))
+            self.app.notifications.save_user('아이콘 테스트', 'test-icon-token')
+            self.app.kakao_settings()
+            kakao = self.app.kakao_window
+
+            def descendants(widget):
+                for child in widget.winfo_children():
+                    yield child
+                    yield from descendants(child)
+
+            from tkinter import ttk
+            tree = next(w for w in descendants(kakao) if isinstance(w, ttk.Treeview))
+            tree.selection_set(str(self.app.notifications.users()[0][0]))
+            self.root.update()
+            next(w for w in descendants(kakao) if isinstance(w, ThemedButton)
+                 and w.cget('text') == '자동 갱신').invoke()
+            popup = next(w for w in kakao.winfo_children() if isinstance(w, tk.Toplevel))
+            self.app.telegram_settings()
+            self.root.update()
+
+        self.assertEqual([call[0] for call in calls],
+                         [settings, preview, kakao, popup, self.app.telegram_window])
+        for window, default, images in calls:
+            self.assertFalse(default)
+            self.assertEqual(images, (self.app.icon_image,))
+
+    def test_result_burst_yields_to_tk_before_queue_is_drained(self):
+        # Reproduce the 806-entry initial catalog / fast fallback burst.
+        for _ in range(806):
+            self.app.events.put(('partial', self.app.revision, '반도체', []))
+        pulse = tk.BooleanVar(master=self.root, value=False)
+        original = self.app.store.ingest
+        def slow_storage(*args, **kwargs):
+            time.sleep(.002)
+            return original(*args, **kwargs)
+        with patch.object(self.app.store, 'ingest', side_effect=slow_storage) as ingest:
+            self.root.after(0, self.app.tick)
+            self.root.after(1, lambda: pulse.set(True))
+            self.root.wait_variable(pulse)
+            self.assertGreater(ingest.call_count, 0)
+            self.assertLessEqual(ingest.call_count, 32)
+            self.assertGreater(self.app.events.qsize(), 0)
+        while not self.app.events.empty():
+            self.app.process_events()
+        self.assertEqual(len(self.app.rows), 7)
+
+    def test_result_slice_refreshes_and_groups_only_once(self):
+        for _ in range(10):
+            self.app.events.put(('partial', self.app.revision, '반도체', []))
+        with patch.object(self.app, 'reload', wraps=self.app.reload) as reload:
+            # This checks coalescing, independently of filesystem latency.
+            with patch('app.time.monotonic', return_value=100):
+                self.app.process_events()
+            reload.assert_called_once_with()
+        self.assertEqual(self.app.events.qsize(), 0)
+
+    def test_notification_lock_does_not_block_ui_and_uses_latest_snapshot(self):
+        import threading
+        started, release = threading.Event(), threading.Event()
+        first, latest = list(self.app.rows), list(self.app.rows[:1])
+        def blocked(rows):
+            started.set()
+            release.wait(5)
+        self.app.demo = False
+        try:
+            with patch.object(self.app.notifications, 'enqueue', side_effect=blocked) as kakao:
+                with patch.object(self.app.telegram, 'enqueue') as telegram:
+                    self.app.notification_pending = first
+                    self.app.start_notification_enqueue()
+                    self.assertTrue(started.wait(2))
+                    self.app.notification_pending = latest
+                    self.app.start_notification_enqueue()
+                    pulse = tk.BooleanVar(master=self.root, value=False)
+                    self.root.after(1, lambda: pulse.set(True))
+                    self.root.wait_variable(pulse)
+                    self.assertTrue(self.app.notification_enqueue_busy)
+                    self.assertEqual(kakao.call_count, 1)
+                    release.set()
+                    deadline = time.monotonic() + 3
+                    while (self.app.notification_enqueue_busy or self.app.notification_pending is not None) and time.monotonic() < deadline:
+                        time.sleep(.01)
+                        self.app.process_events()
+                    self.assertFalse(self.app.notification_enqueue_busy)
+                    self.assertEqual(kakao.call_count, 2)
+                    telegram.assert_called_with(latest)
+        finally:
+            release.set()
+            self.app.demo = True
+
+    def test_grouped_preview_lists_publishers_and_opens_selected_original(self):
+        from news_dedup import deduplicate
+        row = self.app.rows[0]
+        other = {**row, 'url': 'https://second.example/story', 'source': '두 번째 신문'}
+        grouped = deduplicate([row, other])[0]
+        self.assertEqual(grouped['related_count'], 2)
+        self.app.preview(grouped)
+        self.root.update()
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+        win = next(w for w in self.root.winfo_children() if isinstance(w, tk.Toplevel))
+        from tkinter import ttk
+        notebook = next(w for w in descendants(win) if isinstance(w, ttk.Notebook))
+        notebook.select(1)
+        self.root.update()
+        listing = next(w for w in descendants(win) if isinstance(w, tk.Listbox))
+        self.assertEqual(listing.size(), 2)
+        self.assertIn('두 번째 신문', listing.get(1))
+        self.assertGreater(listing.winfo_height(), 30)
+        win.geometry('650x450')
+        self.root.update()
+        self.assertGreater(listing.winfo_height(), 25)
+        for button in (w for w in descendants(win) if isinstance(w, ThemedButton)):
+            self.assertTrue(button.winfo_ismapped())
+            self.assertLessEqual(button.winfo_rooty() + button.winfo_height(),
+                                 win.winfo_rooty() + win.winfo_height())
+        listing.selection_set(1)
+        with patch.object(self.app, 'open_article') as opened:
+            listing.event_generate('<<ListboxSelect>>')
+            self.root.update()
+            opened.assert_called_once_with(other['url'])
+        self.root.tk.call(win.protocol('WM_DELETE_WINDOW'))
+
+    def test_body_comparison_runs_in_background_and_applies_at_page_boundary(self):
+        import threading
+        self.app.demo = False
+        release, started = threading.Event(), threading.Event()
+        def compare(rows, cached, stopped):
+            started.set()
+            release.wait(5)
+            return []
+        with patch('news_similarity.compare_bodies', side_effect=compare):
+            self.app.grouping_signature = None
+            self.app.start_grouping()
+            self.assertTrue(started.wait(2))
+            self.assertTrue(self.app.grouping_busy)
+            self.root.update_idletasks()
+            release.set()
+            deadline = time.monotonic() + 3
+            while self.app.grouping_busy and time.monotonic() < deadline:
+                time.sleep(.01)
+                self.app.process_events()
+            self.assertFalse(self.app.grouping_busy)
+
     def test_settings_show_version_and_disable_checks_in_demo(self):
         from tkinter import ttk
         from version import VERSION
@@ -412,13 +571,14 @@ class GuiTests(unittest.TestCase):
     def test_timer_recovers_from_ui_error_and_still_starts_due_collection(self):
         self.app.demo = False
         self.app.kakao_next = float('inf')
-        self.app.next_fetch = float('inf')
+        self.app.next_fetch = time.monotonic() + 3600
         with patch.object(self.app.status_label, 'configure', side_effect=tk.TclError('temporary UI error')):
             self.app.tick()
         self.assertIsNotNone(self.app.tick_id)
         # Run the actual scheduled callback, not a manual fetch or tick.
         self.app.next_fetch = 0
-        with patch.object(self.app, 'start_fetch') as fetch:
+        # A real fetch marks itself busy; backlog slices may tick again early.
+        with patch.object(self.app, 'start_fetch', side_effect=lambda: setattr(self.app, 'busy', True)) as fetch:
             self.wait_for_layout(1100)
             fetch.assert_called_once()
         self.app.demo = True
@@ -568,18 +728,43 @@ class GuiTests(unittest.TestCase):
         for geometry in ("1100x820", "950x720", "1280x900"):
             self.root.geometry(geometry)
             self.wait_for_layout()
-            self.assertEqual(self.app.content.winfo_children(), cards)
-            self.assertEqual([card.find_withtag("surface") for card in cards], surfaces)
+            if len(self.app.card_rows) == len(cards):
+                self.assertEqual(self.app.content.winfo_children(), cards)
+                self.assertEqual([card.find_withtag("surface") for card in cards], surfaces)
+            else:
+                cards = self.app.content.winfo_children()
+                surfaces = [card.find_withtag("surface") for card in cards]
             self.assertIsNone(self.app.refresh_id)
-            compact = self.app.content.winfo_height() / 3 < 155
+            compact = self.app.content.winfo_height() / len(cards) < 155
             for _, title, description in self.app.card_widgets:
-                self.assertEqual(int(title.cget("wraplength")), self.app.content.winfo_width() - 40)
-                self.assertEqual(description.winfo_manager(), "" if compact else "pack")
+                self.assertEqual(int(title.cget("wraplength")), self.app.content.winfo_width() - 44)
+                self.assertEqual(description.winfo_manager(), "pack")
             if geometry == "950x720":
-                self.assertTrue(compact)
+                self.assertLess(len(cards), 3)
                 self.assertLess(len(self.app.title_labels[0].cget("text")), len(wide_title))
             elif geometry == "1280x900":
                 self.assertFalse(compact)
+
+    def test_long_tags_and_summary_do_not_clip_description(self):
+        self.app.config["page_size"] = 3
+        row = self.app.rows[0]
+        row['keywords'] = [row['keywords'][0]] + ["개인정보보호위원회 · 개인정보·정부 대응"] * 8
+        row['source'] = '아주경제 on MSN'
+        row['related_count'] = 2
+        row['title'] = '권익위 약 10만명 개인정보 유출 개인정보보호위원회에 신고 ' * 6
+        row['summary'] = '국민권익위원회는 개인정보 유출 사고에 대해 신고하고 재발 방지 대책을 마련했다고 설명했다. ' * 8
+        self.app.render()
+        for geometry in ('1840x1000', '1280x900', '950x720', '1840x1000'):
+            self.root.geometry(geometry)
+            self.wait_for_layout()
+            for card, (tag, title, description) in zip(self.app.content.winfo_children(), self.app.card_widgets):
+                self.assertEqual(description.winfo_manager(), 'pack')
+                self.assertGreaterEqual(description.winfo_height(), description.winfo_reqheight())
+                self.assertLessEqual(description.winfo_y() + description.winfo_height(), card.body.winfo_height())
+                self.assertGreaterEqual(description.winfo_y(), title.winfo_y() + title.winfo_height())
+                self.assertLessEqual(card.winfo_y() + card.winfo_height(), self.app.content.winfo_height())
+            self.assertTrue(self.app.card_widgets[0][2].cget('text').startswith('RSS 요약 · '))
+        self.assertTrue(self.app.card_widgets[0][2].cget('text').endswith('…'))
 
     def test_resize_page_capacity_settles_without_repeated_rendering(self):
         self.app.config["page_size"] = 8
@@ -746,8 +931,8 @@ class GuiTests(unittest.TestCase):
     def test_company_batch_register_restore_and_disable(self):
         self.app.settings()
         self.root.update()
-        self.click_settings('전력 및 발전 그룹사 일괄 등록')
-        self.click_settings('전력 및 발전 그룹사 일괄 등록')  # Idempotent.
+        self.click_settings('발전사 등록')
+        self.click_settings('발전사 등록')  # Idempotent.
         tree = next(w for w in self.group_widgets() if isinstance(w, __import__('tkinter').ttk.Treeview))
         self.assertEqual(len(tree.get_children()), 11)
         tree.selection_set('한국전력')
@@ -760,6 +945,39 @@ class GuiTests(unittest.TestCase):
         self.assertTrue(all(not x['enabled'] for x in profiles if x['company'] == '한국전력'))
         self.assertEqual(self.app.store.load_config(), self.app.config)
         self.assertIn('한국남동발전 · 공격 유형', self.app.active_keywords())
+
+    def test_all_institutions_batch_register_filter_and_restore(self):
+        from security_profiles import INSTITUTIONS
+        self.app.settings()
+        self.root.update()
+        self.click_settings('전체 기관 일괄 등록')
+        self.click_settings('전체 기관 일괄 등록')
+        tree = next(w for w in self.group_widgets() if w.winfo_name() == 'company_list')
+        self.assertEqual(len(tree.get_children()), len(INSTITUTIONS))
+        search = next(w for w in self.group_widgets() if w.winfo_name() == 'company_filter')
+        search.insert(0, '행안부')
+        self.root.update()
+        self.assertEqual(tree.get_children(), ('행정안전부',))
+        self.click_settings('저장하고 적용')
+        self.assertEqual(sum(x.get('profile') == 'company_topic' for x in self.app.config['keywords']), 2 * len(INSTITUTIONS))
+        self.assertEqual(self.app.store.load_config(), self.app.config)
+
+    def test_financial_filter_displays_enabled_finance_articles_only(self):
+        from security_profiles import FINANCIAL_TOPICS, FINANCIAL_FILTER, make_entries
+        from institution_catalog import FINANCIAL_INSTITUTIONS
+        entries = make_entries('KB국민은행', FINANCIAL_INSTITUTIONS['KB국민은행'], FINANCIAL_TOPICS)
+        self.app.config['keywords'] += entries
+        self.app.store.ingest(entries[0]['name'], [Article('https://example.com/finance', '국민은행 해킹 피해', '신문', time.time(), '')])
+        self.app.reload(force=True)
+        self.assertIn(FINANCIAL_FILTER, self.app.filter['values'])
+        self.app.filter_var.set(FINANCIAL_FILTER)
+        self.app.select_filter()
+        self.assertEqual([row['url'] for row in self.app.rows], ['https://example.com/finance'])
+        for entry in entries:
+            entry['enabled'] = False
+        self.app.reload(force=True)
+        self.assertEqual(self.app.selected, '전체')
+        self.assertNotIn(FINANCIAL_FILTER, self.app.filter['values'])
 
     def test_custom_company_auto_saved_and_changed_terms_clear_matches(self):
         from security_profiles import COMPANIES, TOPICS, make_entries
@@ -844,7 +1062,7 @@ class GuiTests(unittest.TestCase):
         next(w for w in widgets if w.winfo_name() == 'new_category').insert(0, '안전 사고')
         next(w for w in widgets if w.winfo_name() == 'new_category_terms').insert(0, '화재 | 산업재해')
         self.click_settings('새 분류 추가')
-        self.click_settings('그룹사 등록 / 수정')
+        self.click_settings('기관 등록 / 수정')
         self.click_settings('저장하고 적용')
         self.assertIn('한국전력 · 안전 사고', self.app.active_keywords())
         self.app.settings()
@@ -913,7 +1131,7 @@ class GuiTests(unittest.TestCase):
     def test_group_tables_resize_and_small_window_can_scroll_to_bottom(self):
         self.app.settings()
         self.root.update()
-        self.click_settings('전력 및 발전 그룹사 일괄 등록')
+        self.click_settings('발전사 등록')
         win = self.app.settings_window
         widgets = self.group_widgets()
         tree = next(w for w in widgets if w.winfo_name() == 'company_list')

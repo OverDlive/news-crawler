@@ -26,6 +26,8 @@ from app_updates import app_directory, apply_pending, UpdateChecker
 from version import VERSION
 from search_rules import RuleError, SearchRule
 from group_editor import build_group_editor
+from security_profiles import (register_initial_institutions, register_financial_institutions,
+                               financial_keyword_names, FINANCIAL_FILTER)
 from ui_theme import GAP, PADDING, PALETTES, THEME_LABELS, RoundedPanel, ThemedButton, TextHint, resolve_theme
 
 FONT = "맑은 고딕"
@@ -51,6 +53,11 @@ class NewsMonitor:
         self.root = root
         self.store = Store(directory)
         self.config = self.store.load_config()
+        if not demo:
+            catalog_changed = register_initial_institutions(self.config)
+            finance_changed = register_financial_institutions(self.config)
+            if catalog_changed or finance_changed:
+                self.store.save_config(self.config)
         self.theme = resolve_theme(self.config["theme"])
         self.colors = PALETTES[self.theme]
         self.demo = demo
@@ -64,9 +71,14 @@ class NewsMonitor:
         self.telegram_busy = False
         self.telegram_next = 0
         self.events = queue.Queue()
+        self.notification_enqueue_busy = False
+        self.notification_pending = None
+        self.notification_retry = 0
         self.collector = NewsCollector(fallback=True)
         self.summarizer = ArticleSummarizer()
         self.summary_busy = False
+        self.grouping_busy = False
+        self.grouping_signature = None
         self.summary_preview = None
         self.summary_stop = threading.Event()
         self.cycle_added = 0
@@ -91,6 +103,7 @@ class NewsMonitor:
         self.refresh_id = None
         self.last_size = None
         root.title(f"뉴스 모니터 · 키워드 대시보드 · v{VERSION}" + (" · 데모" if demo else ""))
+        self.configure_icon()
         root.geometry("1280x900")
         root.minsize(950, 720)
         root.configure(bg=self.colors["bg"])
@@ -109,6 +122,22 @@ class NewsMonitor:
         self.tick()
         if self.store.warning:
             messagebox.showwarning("설정 복구", self.store.warning, parent=root)
+
+    def configure_icon(self, window=None):
+        """Apply the icon explicitly; transient windows may not inherit it."""
+        window = self.root if window is None else window
+        assets = Path(__file__).resolve().parent / "assets"
+        try:
+            if not hasattr(self, "icon_image"):
+                self.icon_image = tk.PhotoImage(master=self.root, file=str(assets / "news-monitor.png"))
+            window.iconphoto(window is self.root, self.icon_image)
+            if sys.platform == "win32":
+                icon_path = str(assets / "news-monitor.ico")
+                if window is self.root:
+                    window.iconbitmap(default=icon_path)
+                window.iconbitmap(icon_path)
+        except (tk.TclError, OSError):
+            logging.warning("Could not load the application icon", exc_info=True)
 
     def label(self, parent, text="", size=12, color=None, **kwargs):
         adaptive = len(text) > 45 and "wraplength" not in kwargs
@@ -232,7 +261,7 @@ class NewsMonitor:
         self.root.configure(bg=self.colors["bg"])
         self.configure_styles()
         self.build()
-        self.filter["values"] = ["전체", *self.active_keywords()]
+        self.filter["values"] = self.filter_choices()
         self.filter_var.set(self.selected)
         self.render()
 
@@ -322,15 +351,22 @@ class NewsMonitor:
     def active_keywords(self):
         return [entry["name"] for entry in self.config["keywords"] if entry["enabled"]]
 
+    def filter_choices(self):
+        financial = financial_keyword_names(self.config['keywords'])
+        return ["전체", *([FINANCIAL_FILTER] if financial else []), *self.active_keywords()]
+
     def reload(self, force=False):
         active = self.active_keywords()
-        self.filter["values"] = ["전체", *active]
-        if self.selected not in ["전체", *active]:
+        financial = financial_keyword_names(self.config['keywords'])
+        filters = self.filter_choices()
+        self.filter["values"] = filters
+        if self.selected not in filters:
             self.selected = "전체"
             self.filter_var.set("전체")
         self.feed_name.configure(text='전체 뉴스' if self.selected == '전체' else self.selected)
-        keywords = active if self.selected == "전체" else [self.selected]
-        fresh = self.store.list_articles(keywords, self.config["hours"])
+        keywords = (active if self.selected == "전체" else financial
+                    if self.selected == FINANCIAL_FILTER else [self.selected])
+        fresh = self.store.list_articles(keywords, self.config["hours"], rules=self.config['keywords'])
         # New arrivals are committed at a page boundary, so readers keep their place.
         if force or not self.rows:
             self.rows = fresh
@@ -339,6 +375,36 @@ class NewsMonitor:
         elif fresh != self.rows:
             self.pending_rows = fresh
             self.apply_button.configure(state="normal")
+        self.start_grouping()
+        return fresh
+
+    def start_grouping(self):
+        if self.demo or self.closed or self.grouping_busy:
+            return
+        from news_similarity import compare_bodies, fingerprint
+        rows = self.store.list_articles(self.active_keywords(), self.config['hours'], grouped=False,
+                                        rules=self.config['keywords'])
+        signature = tuple((r['url'], fingerprint(r['body'])) for r in rows if r['body'])
+        if signature == self.grouping_signature:
+            return
+        self.grouping_signature = signature
+        cached = self.store.comparison_cache()
+        events, stopped = self.events, self.summary_stop
+        self.grouping_busy = True
+        def worker():
+            try:
+                results = compare_bodies(rows, cached, stopped)
+                if not stopped.is_set():
+                    events.put(('grouped', results))
+            except Exception:
+                logging.exception('Article body comparison failed')
+                events.put(('grouping_failed',))
+        try:
+            threading.Thread(target=worker, daemon=True, name='news-grouping').start()
+        except Exception:
+            self.grouping_busy = False
+            self.grouping_signature = None
+            raise
 
     def apply_results(self):
         self.page = 0
@@ -353,7 +419,10 @@ class NewsMonitor:
         if height < 50:
             height = max(300, self.root.winfo_height() - 330)
         # Keep every card readable on smaller monitors, even with a high setting.
-        size = min(self.config["page_size"], max(3, int(height / 130)))
+        minimum_card = PADDING * 2 + 8 + sum(
+            tkfont.Font(root=self.root, family=FONT, size=points).metrics('linespace') + 4
+            for points in (11, 14, 10))
+        size = min(self.config["page_size"], max(1, (height + GAP) // (minimum_card + GAP)))
         pages = max(1, (len(self.rows) + size - 1) // size)
         self.page = max(0, min(self.page, pages - 1))
         self.page_label.configure(text=f"{self.page + 1} / {pages}")
@@ -402,20 +471,19 @@ class NewsMonitor:
                                     wraplength=max(180, width - 350), anchor='w', justify='left')
             tag_widget.pack(side="left", fill='x', expand=True)
             TextHint(tag_widget, lambda x, y, full=tag: full, self.colors)
-            self.label(top, f"{row['source']}  ·  {age(row['published'])}  ·  {timestamp(row['published'])}", 10, self.colors["muted"]).pack(side="right")
-            max_chars = max(28, int(width / (title_size * 1.25))) * (1 if compact else 2)
-            title_text = row["title"][:max_chars] + ("…" if len(row["title"]) > max_chars else "")
+            grouped = f" · 기사 {row['related_count']}건" if row.get('related_count', 1) > 1 else ''
+            self.label(top, f"{row['source']}{grouped}  ·  {age(row['published'])}  ·  {timestamp(row['published'])}", 10, self.colors["muted"]).pack(side="right")
+            title_text = row["title"]
             title = self.label(box, title_text, title_size, anchor="w", justify="left",
                                wraplength=width, cursor="hand2")
             title.pack(fill="x", pady=(5, 3))
             self.title_labels.append(title)
             prefix = '본문 요약 · ' if row.get('summary_basis') == 'body' else 'RSS 요약 · '
             description = (prefix + row['summary']) if row.get('summary') else (row["description"] or "기사 미리보기와 원문 링크를 확인하려면 선택하세요.")
-            short = description[:110] + ("…" if len(description) > 110 else "")
-            description_label = self.label(box, short, 10, self.colors["muted"], anchor="w", justify="left",
+            description_label = self.label(box, description, 10, self.colors["muted"], anchor="w", justify="left",
                                            wraplength=width)
-            if not compact:
-                description_label.pack(fill="x")
+            description_label.pack(fill="x")
+            TextHint(description_label, lambda x, y, full=description: full, self.colors)
             self.card_widgets.append((tag_widget, title, description_label))
             self.bind_card(surface, row)
             surface.configure(takefocus=True, cursor="hand2")
@@ -426,18 +494,59 @@ class NewsMonitor:
             surface.bind("<Enter>", lambda e, panel=surface: panel.set_border(self.colors["accent"]))
             surface.bind("<Leave>", lambda e, panel=surface: panel.set_border(panel.border))
 
+        self.layout_cards(width, compact, title_size)
+
+    def fit_card_label(self, label, text, width, max_height):
+        """Use Tk's actual text layout, including font scaling and word wrapping."""
+        text = " ".join(text.split())
+        label.configure(text=text, wraplength=max(1, width))
+        if label.winfo_reqheight() <= max_height:
+            return
+        low, high = 0, len(text)
+        while low < high:
+            middle = (low + high + 1) // 2
+            label.configure(text=text[:middle].rstrip() + "…")
+            if label.winfo_reqheight() <= max_height:
+                low = middle
+            else:
+                high = middle - 1
+        label.configure(text=text[:low].rstrip() + "…")
+
     def layout_cards(self, width, compact, title_size):
-        """Resize existing widgets without clearing the news viewport."""
+        """Reserve space for the description before fitting tags and titles."""
+        count = max(1, len(self.card_rows))
+        height = self.content.winfo_height()
+        if height < 50:
+            height = max(300, self.root.winfo_height() - 330)
+        budget = (height - GAP * (count - 1)) // count - PADDING * 2
         for row, (tag, title, description) in zip(self.card_rows, self.card_widgets):
-            max_chars = max(28, int(width / (title_size * 1.25))) * (1 if compact else 2)
-            text = row["title"][:max_chars] + ("…" if len(row["title"]) > max_chars else "")
-            title.configure(text=text, font=(FONT, title_size), wraplength=width)
-            tag.configure(wraplength=max(180, width - 350))
-            description.configure(wraplength=width)
-            if compact:
-                description.pack_forget()
-            elif not description.winfo_manager():
-                description.pack(fill="x")
+            title.configure(font=(FONT, title_size))
+            metadata = tag.master.winfo_children()[1]
+            # Measure the publisher/date block instead of assuming a fixed width.
+            metadata.configure(wraplength=0)
+            tag_width = max(1, width - metadata.winfo_reqwidth() - 4)
+            def line_height(widget):
+                font = tkfont.Font(root=self.root, font=widget.cget('font'))
+                return (font.metrics('linespace') + 2 * widget.winfo_pixels(widget.cget('pady'))
+                        + 2 * widget.winfo_pixels(widget.cget('borderwidth')))
+            tag_line = line_height(tag)
+            title_line = line_height(title)
+            description_line = line_height(description)
+            # Title packing adds eight pixels of vertical separation.
+            tag_limit = min(tag_line * (1 if compact else 2),
+                            budget - title_line - description_line - 8)
+            full_tag = ("NEW  |  " if time.time() - row["discovered"] < self.config["new_minutes"] * 60 else "") + " · ".join(row["keywords"])
+            self.fit_card_label(tag, full_tag, tag_width, max(tag_line, tag_limit))
+            header_height = max(tag.winfo_reqheight(), metadata.winfo_reqheight())
+            title_limit = min(title_line * (1 if compact else 2),
+                              budget - header_height - description_line - 8)
+            self.fit_card_label(title, row["title"], width - 4, max(title_line, title_limit))
+            prefix = '본문 요약 · ' if row.get('summary_basis') == 'body' else 'RSS 요약 · '
+            text = (prefix + row['summary']) if row.get('summary') else (row["description"] or "기사 미리보기와 원문 링크를 확인하려면 선택하세요.")
+            description_limit = min(description_line * 2,
+                                    budget - header_height - title.winfo_reqheight() - 8)
+            self.fit_card_label(description, text, width - 4,
+                                max(description_line, description_limit))
 
     def bind_card(self, widget, row):
         widget.bind("<Button-1>", lambda e, item=row: self.preview(item))
@@ -501,6 +610,10 @@ class NewsMonitor:
         if self.busy or not self.active_keywords() or self.demo:
             return
         rules = [dict(entry) for entry in self.config["keywords"] if entry["enabled"]]
+        # Allow a full catalog sweep at the existing five-second request pace.
+        query_count = len({query for entry in rules for query in SearchRule(entry).queries})
+        self.collector.cycle_timeout = max(600, query_count * (
+            self.collector.google_request_interval + self.collector.timeout / self.collector.workers) + 120)
         hours = self.config["hours"]
         revision = self.revision
         self.busy = True
@@ -546,12 +659,31 @@ class NewsMonitor:
         self.fetch_button.configure(state="disabled", text="확인 중…")
 
     def process_events(self):
-        while True:
+        # A catalog sweep can publish hundreds of results at once (especially
+        # Bing fallback). Never drain an unbounded queue in a Tk callback.
+        deadline = time.monotonic() + .05
+        refresh = repaint = notify = False
+        for _ in range(32):
+            if time.monotonic() >= deadline:
+                break
             try:
                 event = self.events.get_nowait()
             except queue.Empty:
                 break
-            if event[0] == 'summary':
+            if event[0] == 'grouped':
+                self.grouping_busy = False
+                self.store.save_comparisons(event[1])
+                refresh = True
+            elif event[0] == 'notifications_done':
+                self.notification_enqueue_busy = False
+                if event[2]:
+                    if self.notification_pending is None:
+                        self.notification_pending = event[1]
+                    self.notification_retry = time.monotonic() + 30
+            elif event[0] == 'grouping_failed':
+                self.grouping_busy = False
+                self.last_status = '기사 본문 비교 실패 · 로그와 설치된 라이브러리를 확인하세요.'
+            elif event[0] == 'summary':
                 _, url, summary = event
                 self.store.save_summary(url, summary)
                 values = self.store.get_summary(url)
@@ -563,9 +695,10 @@ class NewsMonitor:
                     row, update = self.summary_preview
                     row.update(values)
                     update()
-                self.render()
+                repaint = True
             elif event[0] == 'summary_done':
                 self.summary_busy = False
+                refresh = True
             elif event[0] == "partial":
                 _, revision, keyword, articles = event
                 if revision != self.revision:
@@ -573,10 +706,7 @@ class NewsMonitor:
                 try:
                     self.cycle_added += self.store.ingest(keyword, articles)
                     self.cycle_stored.add(keyword)
-                    self.reload()
-                    if not self.demo:
-                        self.notifications.enqueue(self.store.list_articles(self.active_keywords(), self.config['hours']))
-                        self.telegram.enqueue(self.store.list_articles(self.active_keywords(), self.config['hours']))
+                    refresh = notify = True
                 except (sqlite3.Error, OSError) as exc:
                     logging.exception("Partial news storage failed")
                     self.cycle_storage_errors.append(str(exc))
@@ -606,10 +736,7 @@ class NewsMonitor:
                         raise sqlite3.OperationalError(self.cycle_storage_errors[0])
                     self.store.prune()
                     self.collection_errors = errors
-                    self.reload()
-                    if not self.demo:
-                        self.notifications.enqueue(self.store.list_articles(self.active_keywords(), self.config['hours']))
-                        self.telegram.enqueue(self.store.list_articles(self.active_keywords(), self.config['hours']))
+                    refresh = notify = True
                     if errors:
                         names = ", ".join(f"{name}: {reason}" for name, reason in errors[:2])
                         if len(errors) > 2:
@@ -625,6 +752,42 @@ class NewsMonitor:
                     logging.exception("News storage failed")
                     self.last_status = f"기사 저장 실패 · {exc}"
                     self.next_fetch = time.monotonic() + max(60, metrics.get('cooldown', 0))
+
+        # Build the grouped snapshot once per slice, and share it with both
+        # notification services. Preserve the existing page-boundary behavior.
+        fresh = self.reload() if refresh else None
+        if repaint:
+            self.render()
+        if notify and not self.demo:
+            self.notification_pending = (fresh if self.selected == '전체' else
+                self.store.list_articles(self.active_keywords(), self.config['hours'], rules=self.config['keywords']))
+        self.start_notification_enqueue()
+
+    def start_notification_enqueue(self):
+        """Notification DB locks must never hold up the Tk event loop."""
+        if (self.closed or self.demo or self.notification_enqueue_busy
+                or self.notification_pending is None or time.monotonic() < self.notification_retry):
+            return
+        rows = self.notification_pending
+        self.notification_pending = None
+        self.notification_enqueue_busy = True
+        notifications, telegram, events = self.notifications, self.telegram, self.events
+        def worker():
+            failed = False
+            try:
+                notifications.enqueue(rows)
+                telegram.enqueue(rows)
+            except Exception:
+                failed = True
+                logging.exception('Notification enqueue failed; will retry')
+            finally:
+                events.put(('notifications_done', rows, failed))
+        try:
+            threading.Thread(target=worker, daemon=True, name='notification-enqueue').start()
+        except Exception:
+            self.notification_enqueue_busy = False
+            self.notification_pending = rows
+            raise
 
     def start_summaries(self):
         if self.demo or self.summary_busy or self.closed:
@@ -668,7 +831,7 @@ class NewsMonitor:
             logging.exception("Automatic monitor tick failed; retrying in one second")
         finally:
             if not self.closed:
-                self.tick_id = self.root.after(1000, self.tick)
+                self.tick_id = self.root.after(20 if not self.events.empty() else 1000, self.tick)
 
     def _tick(self):
         wall = time.time()
@@ -725,6 +888,8 @@ class NewsMonitor:
         pending = " · 새 결과 도착, 페이지 전환 시 반영" if self.pending_rows is not None else ""
         if self.summary_busy:
             pending += ' · 기사 본문 확인·요약 중'
+        if self.grouping_busy:
+            pending += ' · 유사 기사 비교 중'
         text = f"{self.last_status}{pending}\n마지막 수집 성공 {timestamp(success)}  ·  {waiting}"
         self.status_label.configure(text=text, fg=self.colors["warning"] if self.collection_errors else self.colors["muted"],
                                     wraplength=max(500, self.root.winfo_width() - 340))
@@ -734,6 +899,7 @@ class NewsMonitor:
             return
         self.preview_open = True
         win = tk.Toplevel(self.root)
+        self.configure_icon(win)
         win.title("뉴스 미리보기")
         win.geometry("850x580")
         win.minsize(650, 450)
@@ -742,16 +908,73 @@ class NewsMonitor:
         win.grab_set()
         section, body = self.surface(win)
         section.pack(fill="both", expand=True, padx=24, pady=24)
+        actions = tk.Frame(body, bg=self.colors['panel'])
+        actions.pack(side='bottom', fill='x', pady=(14, 0))
+        self.label(body, "자동 요약은 핵심 문장 발췌입니다. 기사 열기로 원문을 확인하세요.",
+                   10, self.colors['muted'], wraplength=550).pack(side='bottom', anchor='w')
         self.label(body, " · ".join(row["keywords"]), 12, self.colors["accent"]).pack(anchor="w")
-        heading = self.label(body, row["title"], 22, wraplength=780, justify="left", anchor="w")
+        heading = self.label(body, row["title"], 18, wraplength=780, justify="left", anchor="w")
         heading.pack(fill="x", pady=16)
         body.bind("<Configure>", lambda e: heading.configure(wraplength=max(400, e.width - 56)))
         self.label(body, f"{row['source']} · 발행 {timestamp(row['published'])} · 발견 {timestamp(row['discovered'])}", 11, self.colors["muted"]).pack(anchor="w")
         if row.get('related_count', 1) > 1:
-            self.label(body, f"유사 기사 {row['related_count']}건 통합 · " + ' / '.join(row['sources']),
+            sources = ' / '.join(row['sources'][:3])
+            if len(row['sources']) > 3:
+                sources += f" 외 {len(row['sources']) - 3}곳"
+            self.label(body, f"유사 기사 {row['related_count']}건 통합 · " + sources,
                        10, self.colors['muted'], wraplength=780, justify='left').pack(anchor='w', pady=(8, 0))
-        text = tk.Text(body, bg=self.colors["bg"], fg=self.colors["fg"], font=(FONT, 13), relief="flat", wrap="word", padx=16, pady=16, height=7)
-        text.pack(fill="both", expand=True, pady=20)
+        text_parent = body
+        if row.get('related_count', 1) > 1:
+            notebook = ttk.Notebook(body, style="Monitor.TNotebook")
+            notebook.pack(fill='both', expand=True, pady=(12, 8))
+            text_parent = tk.Frame(notebook, bg=self.colors['panel'])
+            related_frame = tk.Frame(notebook, bg=self.colors['panel'])
+            notebook.add(text_parent, text='대표 기사 요약')
+            notebook.add(related_frame, text=f"함께 묶인 기사 {row['related_count']}건")
+            self.label(related_frame, "기사를 선택하면 해당 언론사의 원문이 열립니다.",
+                       10, self.colors['muted'], anchor='w').grid(
+                           row=0, column=0, columnspan=2, sticky='ew', pady=(4, 12))
+            related_list = tk.Listbox(related_frame, height=4, font=(FONT, 11),
+                                      bg=self.colors['input'], fg=self.colors['fg'],
+                                      selectbackground=self.colors['hover'],
+                                      selectforeground=self.colors['accent'],
+                                      relief='flat', bd=0, highlightthickness=1,
+                                      highlightbackground=self.colors['border'],
+                                      highlightcolor=self.colors['accent'],
+                                      activestyle='none', exportselection=False)
+            scroll = ttk.Scrollbar(related_frame, orient='vertical', command=related_list.yview,
+                                   style='Monitor.Vertical.TScrollbar')
+            horizontal = ttk.Scrollbar(related_frame, orient='horizontal', command=related_list.xview,
+                                       style='Monitor.Horizontal.TScrollbar')
+            related_list.configure(yscrollcommand=scroll.set, xscrollcommand=horizontal.set)
+            related_list.grid(row=1, column=0, sticky='nsew')
+            scroll.grid(row=1, column=1, sticky='ns', padx=(4, 0))
+            horizontal.grid(row=2, column=0, sticky='ew', pady=(4, 0))
+            related_frame.columnconfigure(0, weight=1)
+            related_frame.rowconfigure(1, weight=1)
+            members = row['related_articles']
+            for index, item in enumerate(members):
+                related_list.insert('end', ('[대표] ' if index == 0 else '') +
+                                    f"{item['source']} · {timestamp(item['published'])} · {item['title']}")
+            def open_related(event=None):
+                selected = related_list.curselection()
+                if selected:
+                    item = members[selected[0]]
+                    values = self.store.get_summary(item['url'])
+                    self.open_article(values.get('content_url') or item['url'])
+            related_list.bind('<<ListboxSelect>>', open_related)
+            related_list.bind('<Return>', open_related)
+        summary_frame = tk.Frame(text_parent, bg=self.colors['panel'])
+        summary_frame.pack(fill='both', expand=True, pady=8)
+        text = tk.Text(summary_frame, bg=self.colors["input"], fg=self.colors["fg"],
+                       font=(FONT, 13), relief="flat", bd=0, wrap="word",
+                       highlightthickness=1, highlightbackground=self.colors['border'],
+                       highlightcolor=self.colors['accent'], padx=16, pady=16, height=4)
+        summary_scroll = ttk.Scrollbar(summary_frame, orient='vertical', command=text.yview,
+                                       style='Monitor.Vertical.TScrollbar')
+        text.configure(yscrollcommand=summary_scroll.set)
+        summary_scroll.pack(side='right', fill='y', padx=(4, 0))
+        text.pack(side='left', fill="both", expand=True)
         row = {**row, **self.store.get_summary(row['url'])}
         def update_summary():
             text.configure(state='normal')
@@ -773,9 +996,6 @@ class NewsMonitor:
             text.configure(state='disabled')
         update_summary()
         self.summary_preview = (row, update_summary)
-        self.label(body, "자동 요약은 핵심 문장 발췌입니다. 기사 열기로 원문을 확인하세요.", 10, self.colors["muted"]).pack(anchor="w")
-        actions = tk.Frame(body, bg=self.colors["panel"])
-        actions.pack(fill="x", pady=(14, 0))
 
         def close():
             self.preview_open = False
@@ -801,6 +1021,7 @@ class NewsMonitor:
             self.settings_window.lift()
             return
         win = tk.Toplevel(self.root)
+        self.configure_icon(win)
         self.settings_window = win
         win.title("키워드 및 모니터링 설정")
         win.geometry(f"{min(920, win.winfo_screenwidth() - 80)}x{min(780, win.winfo_screenheight() - 100)}")
@@ -832,7 +1053,7 @@ class NewsMonitor:
 
         box, rule_canvas = scroll_tab("키워드 / 검색 조건")
         monitor, monitor_canvas = scroll_tab("모니터링 설정")
-        group_box, group_canvas = scroll_tab("발전그룹사 등록")
+        group_box, group_canvas = scroll_tab("기관 등록")
         # Fill the viewport while allowing a minimum usable table height.
         # The longer company-edit form retains the outer canvas scrollbar.
         group_resize_job = [None]
@@ -856,7 +1077,7 @@ class NewsMonitor:
                 canvas.yview_scroll(-int(event.delta / 120), "units")
         win.bind("<MouseWheel>", wheel, add="+")
         self.label(box, "관심 키워드와 검색 조건", 20).pack(anchor="w")
-        self.label(box, "일반 검색 조건 최대 20개 · 발전그룹사는 ‘발전그룹사 등록’ 탭에서 관리", 10, self.colors["muted"]).pack(anchor="w", pady=(4, 10))
+        self.label(box, "일반 검색 조건 최대 20개 · 정부·공공기관·금융권은 ‘기관 등록’ 탭에서 관리", 10, self.colors["muted"]).pack(anchor="w", pady=(4, 10))
         listing = tk.Listbox(box, bg=self.colors["input"], fg=self.colors["fg"], selectbackground=self.colors["hover"], selectforeground=self.colors["accent"], font=(FONT, 12),
                              relief="flat", bd=0, highlightthickness=1, highlightbackground=self.colors["border"],
                              highlightcolor=self.colors["accent"], selectborderwidth=0, height=4, exportselection=False)
@@ -978,7 +1199,7 @@ class NewsMonitor:
             if not name or len(name) > 80 or any(ord(c) < 32 for c in name):
                 messagebox.showwarning("키워드", "키워드를 1~80자로 입력해 주세요.", parent=win)
                 return False
-            if name == "전체":
+            if name in ("전체", FINANCIAL_FILTER):
                 messagebox.showwarning("키워드", "‘전체’는 화면 필터 이름입니다. 다른 키워드를 입력해 주세요.", parent=win)
                 return False
             if any(item["name"].casefold() == name.casefold() for i, item in enumerate(draft) if i != current):
@@ -1238,6 +1459,17 @@ def main():
     if args.fullscreen:
         app.toggle_fullscreen()
     if args.smoke_test:
+        # Exercise compiled NumPy/SciPy dependencies in the packaged executable.
+        try:
+            from news_similarity import body_score, clean_body
+            sample = clean_body('한국전력이 개인정보 보호를 위해 직원 보안 교육과 외부 접속 기록 점검을 실시한다 ' * 20)
+            if body_score(sample, sample) < .99:
+                raise RuntimeError('Packaged body similarity check failed')
+        except Exception:
+            logging.exception('Packaged body similarity check failed')
+            app.close()
+            return 1
+        logging.info('Body similarity smoke test passed')
         root.after(1200, app.close)
     if updates_enabled:
         def check_updates():

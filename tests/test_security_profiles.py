@@ -6,10 +6,84 @@ from urllib.parse import parse_qs, urlsplit
 
 from news_core import Store, fetch_news
 from search_rules import SearchRule, RuleError
-from security_profiles import COMPANIES, TOPICS, make_entries, parse_template, phrases
+from security_profiles import COMPANIES, INSTITUTIONS, TOPICS, make_entries, parse_template, phrases, register_initial_institutions
+from institution_catalog import GOVERNMENT_BODIES, PUBLIC_INSTITUTIONS, FINANCIAL_INSTITUTIONS
+from security_profiles import FINANCIAL_TOPICS, register_financial_institutions
 
 
 class SecurityProfileTests(unittest.TestCase):
+    def test_complete_catalog_and_ministry_aliases(self):
+        self.assertEqual(len(GOVERNMENT_BODIES), 60)
+        self.assertEqual(len(PUBLIC_INSTITUTIONS), 342)
+        expected = set(GOVERNMENT_BODIES) | set(PUBLIC_INSTITUTIONS) | set(FINANCIAL_INSTITUTIONS)
+        expected.remove('한국전력공사')
+        expected.add('한국전력')
+        self.assertEqual(set(INSTITUTIONS), expected)
+        for name, aliases in INSTITUTIONS.items():
+            SearchRule(make_entries(name, aliases, TOPICS)[0])
+        self.assertTrue(SearchRule(make_entries('행정안전부', INSTITUTIONS['행정안전부'], TOPICS)[0]).matches('행안부 개인정보 유출 조사'))
+        self.assertTrue(SearchRule(make_entries('법무부', INSTITUTIONS['법무부'], TOPICS)[0]).matches('법무부 해킹 피해'))
+
+    def test_initial_registration_preserves_edits_and_deletions_after_restart(self):
+        entry = make_entries('한국전력', ['한전'], {'안전 사고': ['화재']})[0]
+        entry['enabled'] = False
+        config = {'keywords': [entry]}
+        self.assertTrue(register_initial_institutions(config))
+        self.assertEqual(config['keywords'][0], entry)
+        self.assertEqual(sum(x['company'] == '한국전력' for x in config['keywords']), 1)
+        config['keywords'] = [x for x in config['keywords'] if x['company'] != '법무부']
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory))
+            full_config = {**store.load_config(), **config}
+            store.save_config(full_config)
+            restored = store.load_config()
+            self.assertEqual(restored, full_config)
+            self.assertFalse(register_initial_institutions(restored))
+            self.assertFalse(any(x['company'] == '법무부' for x in restored['keywords']))
+            store.close()
+
+    def test_large_institution_template(self):
+        text = '[기관 키워드]\n' + '\n'.join(INSTITUTIONS)
+        for category, terms in TOPICS.items():
+            text += '\n[' + category + ']\n' + ' | '.join(terms)
+        institutions, _ = parse_template(text)
+        self.assertEqual(set(institutions), set(INSTITUTIONS))
+
+    def test_finance_upgrade_preserves_edits_and_deletions(self):
+        entry = make_entries('KB국민은행', ['국민은행'], {'공격 유형': ['해킹']})[0]
+        entry['enabled'] = False
+        config = {'keywords': [entry], 'institution_catalog_version': 20261008}
+        self.assertTrue(register_financial_institutions(config))
+        self.assertEqual(config['keywords'][0], entry)
+        self.assertFalse(any(x.get('company') == '법무부' for x in config['keywords']))
+        config['keywords'] = [x for x in config['keywords'] if x['company'] != '모우다']
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory))
+            self.addCleanup(store.close)
+            store.save_config({**store.load_config(), **config})
+            restored = store.load_config()
+            self.assertFalse(register_financial_institutions(restored))
+            self.assertFalse(any(x['company'] == '모우다' for x in restored['keywords']))
+            store.close()
+
+    def test_financial_incidents_and_followups(self):
+        cases = [
+            ('KB국민은행', '국민은행 해킹 피해 확인'),
+            ('예가람저축은행', '예가람저축은행 고객 신용정보 유출'),
+            ('웰컴저축은행', '웰컴저축은행 해킹 사고'),
+            ('피에프씨테크놀로지스', 'PFCT 개인정보 유출'),
+            ('현대캐피탈', '현대캐피탈 해킹 피해'),
+            ('롯데카드', '롯데카드 카드번호·CVC 유출'),
+            ('금융권', '은행·카드 해킹 긴급 점검 완료… 추가 정보 유출 아직 없어'),
+        ]
+        for company, title in cases:
+            rules = [SearchRule(x) for x in make_entries(company, FINANCIAL_INSTITUTIONS[company], FINANCIAL_TOPICS)]
+            description = '전 금융권 해킹 공격에 금융감독원이 현장검사에 착수했다.'
+            self.assertTrue(any(rule.matches(title, description) for rule in rules), title)
+        rule = SearchRule(make_entries('롯데카드', FINANCIAL_INSTITUTIONS['롯데카드'], FINANCIAL_TOPICS)[0])
+        self.assertFalse(rule.matches('롯데카드 신제품 출시, 개인정보 유출 방지 기능'))
+        self.assertFalse(rule.matches('롯데카드 카드번호 유출 사실은 없다'))
+
     def test_parent_company_does_not_match_subsidiary_name(self):
         rule = SearchRule(make_entries('한국전력', COMPANIES['한국전력'], TOPICS)[0])
         for title in ('한전KDN 개인정보 유출', '한전KPS 해킹', '한국전력기술 랜섬웨어', '대한전기협회 개인정보'):
@@ -42,7 +116,7 @@ class SecurityProfileTests(unittest.TestCase):
             rule = SearchRule(entry)
             for alias in entry['aliases']:
                 for term in entry['terms']:
-                    self.assertTrue(rule.matches(alias + ' ' + term))
+                    self.assertTrue(rule.matches(alias + ' ' + term + ' 개인정보 유출 사고'))
             self.assertFalse(rule.matches(entry['aliases'][0] + ' 일반 계약 체결'))
             self.assertFalse(rule.matches('다른 기업 랜섬웨어 과징금'))
             self.assertEqual(len(rule.queries), 3)
@@ -62,7 +136,8 @@ class SecurityProfileTests(unittest.TestCase):
         attack, government = make_entries('한국전력', COMPANIES['한국전력'], TOPICS, '채용, 주가', 'title')
         self.assertTrue(SearchRule(attack).matches('한전 해킹'))
         self.assertFalse(SearchRule(attack).matches('한전 과징금'))
-        self.assertTrue(SearchRule(government).matches('한국전력 과징금'))
+        self.assertFalse(SearchRule(government).matches('한국전력 과징금'))
+        self.assertTrue(SearchRule(government).matches('한국전력 해킹 피해 개인정보 유출 과징금'))
         self.assertFalse(SearchRule(attack).matches('한전', '해킹'))
         self.assertFalse(SearchRule(attack).matches('한전 해킹 주가'))
         with self.assertRaises(RuleError):

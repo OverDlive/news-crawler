@@ -13,6 +13,7 @@ def open_telegram_editor(app):
         return
     c = app.colors
     win = app.telegram_window = tk.Toplevel(app.root)
+    app.configure_icon(win)
     win.title('뉴스 모니터 · 텔레그램 자동 공유')
     win.geometry('760x780')
     win.minsize(680, 720)

@@ -1,0 +1,71 @@
+{
+  "checked_at": 1791341852.4468696,
+  "hours": 24,
+  "requests": 3,
+  "provider": "google",
+  "added": 5,
+  "visible": [
+    {
+      "url": "https://news.google.com/rss/articles/CBMibkFVX3lxTE5KOEZUX05QWnlGYXpLOFNVSnYyVGQzakxvQmxyazBvdWx5bUdXUWlJSGl6Z1pybFIyNzk5VXdPSFJhMlVSMkpSVXBnbTl0bzVYcy00T3FNSVc5LTY4ZkVJVlpmRkMwT1I3cWRNNDF3",
+      "title": "한전 개인정보 노출, 퇴직자 302명도 포함…22명 개별 통지 못해",
+      "source": "아시아투데이",
+      "published": 1791337080.0,
+      "description": "",
+      "discovered": 1791341852.4329596,
+      "keywords": [
+        "한국전력 · 공격 유형"
+      ],
+      "related_count": 1,
+      "sources": [
+        "아시아투데이"
+      ]
+    },
+    {
+      "url": "https://news.google.com/rss/articles/CBMibEFVX3lxTE9fb2pFc3E2dUtZN2hQeEtQZVpSbEEzVENiM0dmQVJRTUZDYUY0eWhLNjBpZk1PTDAtVUJvaHZzTDJjaFh6YU9fZ0szNTJUdzAtNEREWmc1WkYxU1dtSWdxdXJKRGViZzFaUW00Qw",
+      "title": "한전 전직원 2만4천명 개인정보 해킹 유출…이름·사번 등 7개 항목",
+      "source": "한겨레",
+      "published": 1791307238.0,
+      "description": "",
+      "discovered": 1791341852.4329596,
+      "keywords": [
+        "한국전력 · 공격 유형"
+      ],
+      "related_count": 2,
+      "sources": [
+        "한겨레",
+        "일요주간"
+      ]
+    },
+    {
+      "url": "https://news.google.com/rss/articles/CBMicEFVX3lxTFBWUVVzX21GdzdBVkhjOXZ6MHBKYkl2b2k4OV94Z2ZJUWZaS0hueU9PZEZIRnNXbVFoT1RidUxTTm1kLXlERHpMLWVIcnZ4OG16YXl5QTRmSWV3cEoxQTNGbkllaXk1VDE1eVpVeTFhLUnSAXBBVV95cUxQVlFVc19tRnc3QVZIYzl2ejBwSmJJdm9pODlfeGdmSVFmWktIbnlPT2RGSEZzV21RaE9UYnVMU05tZC15RER6TC1lSHJ2eDhtemF5eUE0Zklld3BKMUEzRm5JZWl5NVQxNXlaVXkxYS1J",
+      "title": "금융권 넘어 한전·대학까지…개인정보 유출 ‘전방위 확산’",
+      "source": "미디어스",
+      "published": 1791281529.0,
+      "description": "",
+      "discovered": 1791341852.4329596,
+      "keywords": [
+        "한국전력 · 공격 유형"
+      ],
+      "related_count": 1,
+      "sources": [
+        "미디어스"
+      ]
+    },
+    {
+      "url": "https://news.google.com/rss/articles/CBMibEFVX3lxTE93MWFsQVdJSUN0UHdhTHNnLUhBYkRsc2R6bS10OXVnSnc2Wk5IWnptdE90UWMzQjV3NGdiRklqVFRjTll3OW80QUN3Z3hNTU1RNXpXOFozMUxDTHlZZGFxOUVpbmlSR2dJUm5QbA",
+      "title": "[단독] 한국전력 2만4천명 직원 정보 노출 넘어 내부 보안 정보까지 유출 정황...내부 보안 인프라까지 조사 확대해야",
+      "source": "데일리시큐",
+      "published": 1791267194.0,
+      "description": "",
+      "discovered": 1791341852.4329596,
+      "keywords": [
+        "한국전력 · 공격 유형"
+      ],
+      "related_count": 1,
+      "sources": [
+        "데일리시큐"
+      ]
+    }
+  ],
+  "errors": []
+}

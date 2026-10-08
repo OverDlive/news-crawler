@@ -1,0 +1,188 @@
+{
+  "checked_at": 1791118870.1816936,
+  "hours": 24,
+  "requests": 31,
+  "seconds": 13.119496300001629,
+  "results": [
+    {
+      "name": "한국중부발전 · 공격 유형",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한국중부발전 · 개인정보위·정부 대응",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한국서부발전 · 공격 유형",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한국서부발전 · 개인정보위·정부 대응",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한국동서발전 · 공격 유형",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한국동서발전 · 개인정보위·정부 대응",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한국전력기술 · 공격 유형",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한국전력기술 · 개인정보위·정부 대응",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한전KPS · 공격 유형",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한전KPS · 개인정보위·정부 대응",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한국수력원자력 · 공격 유형",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한국수력원자력 · 개인정보위·정부 대응",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한전KDN · 공격 유형",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한전KDN · 개인정보위·정부 대응",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한국남부발전 · 공격 유형",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한국남부발전 · 개인정보위·정부 대응",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한국전력 · 공격 유형",
+      "count": 8,
+      "articles": [
+        {
+          "url": "https://www.msn.com/ko-kr/money/topstories/%ED%95%9C%EC%A0%84-%EC%A7%81%EC%9B%90-2%EB%A7%8C4000%EB%AA%85-%EA%B0%9C%EC%9D%B8%EC%A0%95%EB%B3%B4-%EB%85%B8%EC%B6%9C-%EA%B3%A0%EA%B0%9D%EC%A0%95%EB%B3%B4%EB%8A%94-%ED%94%BC%ED%95%B4-%EC%97%86%EC%96%B4/ar-AA2dxcaL",
+          "title": "한전 직원 2만4000명 개인정보 노출…고객정보는 피해 없어",
+          "source": "아시아경제 on MSN",
+          "published": 1791090907.0,
+          "description": "한국전력공사 직원 2만4000여명의 개인정보가 외부 웹페이지에 노출되는 사고가 발생했다. 이름과 소속, 전화번호 등 직원 정보가 대규모로 외부에 게시됐으며, 국가정보원이 이를 최초로 발견해 한전에 통보했다."
+        },
+        {
+          "url": "https://www.msn.com/ko-kr/news/other/%ED%95%9C%EA%B5%AD%EC%A0%84%EB%A0%A5-2%EB%A7%8C4%EC%B2%9C-%EB%AA%85-%EC%A0%84-%EC%A7%81%EC%9B%90-%EA%B0%9C%EC%9D%B8%EC%A0%95%EB%B3%B4-%EC%99%B8%EB%B6%80-%EB%85%B8%EC%B6%9C/ar-AA2dw8kc",
+          "title": "한국전력, 2만4천 명 전 직원 개인정보 외부 노출",
+          "source": "YTN on MSN",
+          "published": 1791078900.0,
+          "description": "[앵커] 한국전력공사에서 2만 명이 넘는 전 직원의 개인정보가 노출되는 사고가 일어났습니다. 한전 측은 개인정보보호위원회에 관련 사실을 보고하고 해킹 여부를 조사하고 있다고 밝혔습니다. 취재기자 연결하겠습니다. 김태민 기자, 또 한 번 개인정보가 대규모로 빠져나갔는데 사고 경위 전해주시죠. [기자] 한국전력은 지난 1일 ..."
+        },
+        {
+          "url": "https://v.daum.net/v/20261004212105045",
+          "title": "한국전력, 2만4천 명 전체 직원 개인정보 외부 노출",
+          "source": "다음 뉴스",
+          "published": 1791073260.0,
+          "description": "국내 최대 공기업인 한국전력공사에서 전 직원의 개인정보가 노출되는 사고가 일어났습니다. 한국전력은 지난 1일 오후 4시쯤 2만4천 명에 달하는 전 직원의 이름과 연락처, 메일주소, 지위 등 개인정보 7개 항목이 특정 외부 웹페이지에 노출됐다고 밝혔습니다. 관련 사실은 국가정보원이 처음 발견해 한전 측에 통보했으며 이후 32시간 만인 어제(3일) 새벽 0 ..."
+        },
+        {
+          "url": "https://www.msn.com/ko-kr/news/other/%ED%95%9C%EC%A0%84-%EC%A7%81%EC%9B%90-2400%EC%97%AC%EB%AA%85-%EA%B0%9C%EC%9D%B8%EC%A0%95%EB%B3%B4-%EB%85%B8%EC%B6%9C-%EC%82%AC%EA%B3%A0-%EA%B3%A0%EA%B0%9D-%EC%A0%95%EB%B3%B4%EB%8A%94-%EC%95%88%EC%A0%84/ar-AA2dvGtT",
+          "title": "한전 직원 2400여명 개인정보 노출 사고…\"고객 정보는 안전\"",
+          "source": "머니투데이 on MSN",
+          "published": 1791071703.0,
+          "description": "최근 금융권을 중심으로 개인정보 유출 사고가 잇따르는 가운데 한국전력공사(이하 한전)에서도 직원들의 개인정보 노출사고가 발생했다. 한전은 관계기관 조사 등을 통해 사고 원인을 규명한 뒤 피해 재발방지 대책을 마련할 계획이다. 한전은 4일 배포한 입장문을 통해 \"지난 1일 오후 3시59분쯤 외부 웹페이지에 직원 개인정보가 노출된 상황을 인지했다\"고 밝혔다."
+        },
+        {
+          "url": "https://www.mbn.co.kr/news/economy/5223029",
+          "title": "한국전력, 전 직원 2만 4천여 명 개인정보 노출…\"해킹 공격 여부 조사\"",
+          "source": "매일방송",
+          "published": 1791070320.0,
+          "description": "해피라이프 Make Better Next 서울 소재의 빵집 사장님은 과거 골목 ... 2026. 10. 01 해피라이프 Make Better Next 김의영이라는 가수가 신나는 무대에서 어... 2026. 10. 01 해피라이프 Make Better Next 홍천의 한우를 맛보면서 육즙과 풍미에 ... 2026. 10. 01 해피라이프 Make Better ..."
+        },
+        {
+          "url": "https://www.msn.com/ko-kr/news/other/%EC%86%8D%EB%B3%B4-%ED%95%9C%EA%B5%AD%EC%A0%84%EB%A0%A5-%EC%A0%84-%EC%A7%81%EC%9B%90-%EA%B0%9C%EC%9D%B8%EC%A0%95%EB%B3%B4-%EB%85%B8%EC%B6%9C%EA%B3%B5%EC%A1%B0-%EC%A1%B0%EC%82%AC-%EC%A7%84%ED%96%89-%EB%8B%A8%EB%8F%85/ar-AA2dwrtF",
+          "title": "[속보] 한국전력, 전 직원 개인정보 노출... 공조 조사 진행 [단독]",
+          "source": "YTN on MSN",
+          "published": 1791066840.0,
+          "description": "한국전력공사에서 전 직원의 개인정보가 노출되는 사고가 일어났습니다. 한국전력은 지난 1일 오후 4시쯤 2만 2천여 명에 달하는 전 직원의 이름과 연락처, 메일주소, 지위 등 개인정보 7개 항목이 특정 웹페이지에 노출됐다고 밝혔습니다. 한전 측은 노출된 웹페이지를 즉시 삭제한 뒤 국가기관과 공조 조사를 벌이고 있습니다."
+        },
+        {
+          "url": "https://www.hani.co.kr/arti/society/environment/1280864.html",
+          "title": "한전 전직원 2만4천명 개인정보 해킹 유출…이름·사번 등 7개 항목",
+          "source": "한겨레",
+          "published": 1791063600.0,
+          "description": "최근 금융기관을 중심으로 인공지능 해킹으로 인한 개인정보 유출 사고가 잇따라 발생한 가운데, 한국전력공사(한전)에서도 2만명이 넘는 전직원의 개인정보가 외부 누리집에 노출되는 사고가 일어났다. 한전이 개인정보 노출 사실을 인지한 뒤 해당 정보가 삭제되기까지는 약 32시 ..."
+        },
+        {
+          "url": "https://www.fnnews.com/news/202610041651401515",
+          "title": "한전 직원 2만4천여명 개인정보 노출…\"고객정보는 안전\"",
+          "source": "파이낸셜뉴스",
+          "published": 1791057060.0,
+          "description": "한전 직원 2만4천여명 개인정보 노출…\"고객정보는 안전\" (서울=연합뉴스) 신창용 기자 = 최근 금융권에서 개인정보 유출 사고가 잇따르는 가운데 한국전력에서도 사고가 발생했다. 한전은 4일 배포한 입장문을 통해 \"지난 1일 오후 3시 59분께 외부 웹페이지에 .."
+        }
+      ]
+    },
+    {
+      "name": "한국전력 · 개인정보위·정부 대응",
+      "count": 1,
+      "articles": [
+        {
+          "url": "https://www.msn.com/ko-kr/news/other/%ED%95%9C%EA%B5%AD%EC%A0%84%EB%A0%A5-2%EB%A7%8C4%EC%B2%9C-%EB%AA%85-%EC%A0%84-%EC%A7%81%EC%9B%90-%EA%B0%9C%EC%9D%B8%EC%A0%95%EB%B3%B4-%EC%99%B8%EB%B6%80-%EB%85%B8%EC%B6%9C/ar-AA2dw8kc",
+          "title": "한국전력, 2만4천 명 전 직원 개인정보 외부 노출",
+          "source": "YTN on MSN",
+          "published": 1791078900.0,
+          "description": "[앵커] 한국전력공사에서 2만 명이 넘는 전 직원의 개인정보가 노출되는 사고가 일어났습니다. 한전 측은 개인정보보호위원회에 관련 사실을 보고하고 해킹 여부를 조사하고 있다고 밝혔습니다. 취재기자 연결하겠습니다. 김태민 기자, 또 한 번 개인정보가 대규모로 빠져나갔는데 사고 경위 전해주시죠. [기자] 한국전력은 지난 1일 ..."
+        }
+      ]
+    },
+    {
+      "name": "한국남동발전 · 공격 유형",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한국남동발전 · 개인정보위·정부 대응",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한전원자력연료 · 공격 유형",
+      "count": 0,
+      "articles": []
+    },
+    {
+      "name": "한전원자력연료 · 개인정보위·정부 대응",
+      "count": 0,
+      "articles": []
+    }
+  ],
+  "errors": [],
+  "provider": "bing",
+  "fallback_reason": "Google RSS 연결 실패 · Bing RSS 대체 수집",
+  "live_collection_verified": true,
+  "total_unique_articles": 8
+}

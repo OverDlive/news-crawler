@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+data/
+demo_data/
+.test-data/
+.tk-runtime/
+tmp/
+.env
+.env.*
+!.env.example
+*.log
+*.sqlite3
+*.sqlite3-*

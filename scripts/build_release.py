@@ -3,6 +3,7 @@ import argparse
 import hashlib
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 
@@ -23,6 +24,10 @@ def main():
         (ROOT / 'version.py').write_text(
             f'VERSION = {args.version.removeprefix("v")!r}\n'
             f'REPOSITORY = {args.repository!r}\nASSET_NAME = "NewsMonitor.exe"\n', encoding='utf-8')
+    from version import VERSION
+    notes = ROOT / 'releases' / f'v{VERSION}.md'
+    if not notes.is_file():
+        parser.error(f'Create numbered release notes first: {notes}')
     subprocess.run([sys.executable, '-m', 'PyInstaller', '--clean', '--noconfirm',
                     str(ROOT / 'NewsMonitor.spec')], cwd=ROOT, check=True)
     executable = ROOT / 'dist' / 'NewsMonitor.exe'
@@ -30,6 +35,7 @@ def main():
         checksum = hashlib.file_digest(source, 'sha256').hexdigest()
     executable.with_suffix('.exe.sha256').write_text(
         f'{checksum}  NewsMonitor.exe\n', encoding='utf-8')
+    shutil.copyfile(notes, ROOT / 'dist' / 'RELEASE_NOTES.md')
     print(executable)
 
 

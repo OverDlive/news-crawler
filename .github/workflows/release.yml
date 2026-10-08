@@ -48,6 +48,7 @@ jobs:
           path: |
             dist/NewsMonitor.exe
             dist/NewsMonitor.exe.sha256
+            dist/RELEASE_NOTES.md
           if-no-files-found: error
   publish:
     needs: build
@@ -67,4 +68,4 @@ jobs:
           RELEASE_COMMIT: ${{ github.sha }}
         shell: bash
         run: |
-          gh release create "$RELEASE_TAG" dist/NewsMonitor.exe dist/NewsMonitor.exe.sha256 --target "$RELEASE_COMMIT" --title "News Monitor $RELEASE_TAG" --notes "Windows portable EXE. Updates download automatically and apply on the next launch. Existing settings and news databases are preserved." --latest
+          gh release create "$RELEASE_TAG" dist/NewsMonitor.exe dist/NewsMonitor.exe.sha256 dist/RELEASE_NOTES.md --target "$RELEASE_COMMIT" --title "News Monitor $RELEASE_TAG" --notes-file dist/RELEASE_NOTES.md --latest

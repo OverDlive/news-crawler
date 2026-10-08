@@ -5,6 +5,8 @@ Tkinter와 SQLite를 사용하며, 본문 유사도 비교에는 scikit-learn을
 
 ## 실행
 
+현재 정식 버전은 **v1.1.0**입니다. [번호별 개발 내용 및 업데이트 안내](releases/v1.1.0.md)를 참고하세요.
+
 ### Windows EXE 실행 및 자동 업데이트
 
 Python 설치 없이 `NewsMonitor.exe`를 더블 클릭해 실행할 수 있습니다.
@@ -57,6 +59,8 @@ git push origin v1.0.0
 ```
 
 다음 배포는 새 버전 태그(예: `v1.0.1`)를 사용하세요. 같은 릴리스 버전을 덮어쓰지 않습니다.
+새 태그를 게시하기 전에 `version.py`의 버전을 변경하고 `releases/v새버전.md`에 번호별 릴리스 노트를 작성합니다.
+Actions는 이 내용을 릴리스 본문과 `RELEASE_NOTES.md` 다운로드 파일에 함께 게시합니다.
 수동 실행의 `version`에도 `v1.0.1` 형태를 입력합니다.
 저장소 Settings → Actions에서 Actions 실행을 허용해야 합니다.
 게시 작업은 저장소의 기본 `GITHUB_TOKEN`과 `contents: write` 권한을 사용하며 별도 개인 토큰이 필요 없습니다.

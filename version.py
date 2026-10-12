@@ -1,4 +1,4 @@
 """Release identity; CI replaces this file from the release tag."""
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 REPOSITORY = "OverDlive/news-crawler"
 ASSET_NAME = "NewsMonitor.exe"

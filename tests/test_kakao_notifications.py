@@ -26,7 +26,7 @@ class NotificationTests(unittest.TestCase):
         self.queue.set_enabled(user, False)
         restarted = Notifications(Path(self.temp.name))
         self.assertEqual([row[2] for row in restarted.users()], [0, 1])
-        newer = {**self.article, 'url': 'https://example.com/while-off'}
+        newer = {**self.article, 'url': 'https://example.com/while-off', 'title': '별도의 후속 기사'}
         restarted.enqueue([newer])
         calls = []
         def sender(token, article):

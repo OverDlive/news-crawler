@@ -312,7 +312,7 @@ def open_kakao_editor(app):
     scroll = ttk.Scrollbar(history_box, orient='vertical', command=history.yview, style='Monitor.Vertical.TScrollbar')
     scroll.grid(row=0, column=1, sticky='ns')
     history.configure(yscrollcommand=scroll.set)
-    states = {'pending': '대기', 'sending': '전송 중', 'sent': 'API 전송 성공', 'failed': '실패', 'unknown': '결과 불명'}
+    states = {'pending': '대기', 'sending': '전송 중', 'sent': 'API 전송 성공', 'failed': '실패', 'unknown': '결과 불명', 'skipped': '중복 제외'}
     last_history = [None]
     timer = [None]
     def update_history():

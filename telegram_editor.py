@@ -107,7 +107,7 @@ def open_telegram_editor(app):
                       wrap='word', relief='flat', state='disabled')
     history.pack(fill='both', expand=True)
     snapshot = [None]
-    states = {'pending': '대기', 'sending': '전송 중', 'sent': '성공', 'failed': '실패', 'unknown': '결과 불명'}
+    states = {'pending': '대기', 'sending': '전송 중', 'sent': '성공', 'failed': '실패', 'unknown': '결과 불명', 'skipped': '중복 제외'}
 
     def refresh():
         try:

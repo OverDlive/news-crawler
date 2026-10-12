@@ -9,6 +9,7 @@ import urllib.request
 from contextlib import contextmanager
 
 from kakao_notifications import protect
+from notification_policy import prepare_queue
 
 
 class TelegramError(Exception):
@@ -178,6 +179,7 @@ class TelegramNotifications:
     def enqueue(self, articles):
         # Enqueue runs on the GUI thread; never wait for a network worker's lock.
         with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
             config = db.execute('SELECT * FROM settings WHERE id=1').fetchone()
             if not config['enabled'] or config['chat_id'] is None:
                 return
@@ -185,6 +187,7 @@ class TelegramNotifications:
                 if article['discovered'] >= config['registered']:
                     db.execute('INSERT OR IGNORE INTO deliveries(chat_id,url,article) VALUES(?,?,?)',
                                (config['chat_id'], article['url'], json.dumps(article, ensure_ascii=False)))
+            prepare_queue(db, 'chat_id', config['chat_id'])
 
     def status(self):
         with self.connect() as db:
@@ -213,6 +216,7 @@ class TelegramNotifications:
                     db.execute('INSERT INTO deliveries(chat_id,url,article) VALUES(?,?,?)',
                                (config['chat_id'], key, json.dumps(article, ensure_ascii=False)))
                 else:
+                    prepare_queue(db, 'chat_id', config['chat_id'])
                     row = db.execute("SELECT url,article FROM deliveries WHERE chat_id=? AND state='pending' ORDER BY rowid LIMIT 1", (config['chat_id'],)).fetchone()
                     if row is None:
                         return
@@ -223,6 +227,7 @@ class TelegramNotifications:
             try:
                 response = request(protect(config['token'], True), 'sendMessage',
                     {'chat_id': config['chat_id'], 'text': article_text(article),
+                     'allow_paid_broadcast': False,
                      'link_preview_options': {'is_disabled': True}})
                 if isinstance(response, dict) and type(response.get('message_id')) is int:
                     state, detail = 'sent', '텔레그램 API 전송 성공'

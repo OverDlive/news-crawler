@@ -24,7 +24,7 @@ class TelegramTests(unittest.TestCase):
                         {'update_id': 2, 'message': {'chat': {'id': 12, 'type': 'private'}}}]
         self.queue.discover(TOKEN, request=self.request)
         self.queue.activate(-100, request=self.request)
-        self.article = {'title': '기사 <제목>', 'source': '언론사', 'description': '설명',
+        self.article = {'title': '한국전력 개인정보 유출 사고 확인', 'source': '언론사', 'description': '설명',
                         'url': 'https://example.com/news', 'discovered': time.time() + 1}
 
     def request(self, token, method, fields=None):

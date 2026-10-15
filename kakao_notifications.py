@@ -10,7 +10,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from notification_policy import prepare_queue
+from notification_policy import prepare_queue, remember_article
+from news_importance import share_priority
 
 
 def protect(value, decrypt=False):
@@ -269,8 +270,7 @@ class Notifications:
             for user, registered in users:
                 for article in articles:
                     if article['discovered'] >= registered:
-                        db.execute('INSERT OR IGNORE INTO deliveries(recipient,url,article) VALUES(?,?,?)',
-                                   (user, article['url'], json.dumps(article, ensure_ascii=False)))
+                        remember_article(db, 'recipient', user, article)
                 prepare_queue(db, 'recipient', user)
 
     def status(self):
@@ -292,12 +292,13 @@ class Notifications:
                 db.execute('BEGIN IMMEDIATE')
                 for (user,) in db.execute('SELECT id FROM recipients WHERE enabled=1').fetchall():
                     prepare_queue(db, 'recipient', user)
-                row = db.execute('''SELECT d.recipient,d.url,d.article,r.token FROM deliveries d
+                candidates = db.execute('''SELECT d.recipient,d.url,d.article,r.token FROM deliveries d
                     JOIN recipients r ON r.id=d.recipient
                     WHERE d.state='pending' AND r.enabled=1 AND r.auth_error=''
-                    AND (r.refresh_token='' OR r.expires_at>?) ORDER BY d.rowid LIMIT 1''', (time.time(),)).fetchone()
-                if row is None:
+                    AND (r.refresh_token='' OR r.expires_at>?) ORDER BY d.rowid''', (time.time(),)).fetchall()
+                if not candidates:
                     break
+                row = max(candidates, key=lambda item: share_priority(json.loads(item[2]))[0])
                 db.execute("UPDATE deliveries SET state='sending' WHERE recipient=? AND url=?", row[:2])
             try:
                 state, detail = sender(protect(row[3], decrypt=True), json.loads(row[2]))

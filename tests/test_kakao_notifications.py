@@ -26,7 +26,7 @@ class NotificationTests(unittest.TestCase):
         self.queue.set_enabled(user, False)
         restarted = Notifications(Path(self.temp.name))
         self.assertEqual([row[2] for row in restarted.users()], [0, 1])
-        newer = {**self.article, 'url': 'https://example.com/while-off', 'title': '별도의 후속 기사'}
+        newer = {**self.article, 'url': 'https://example.com/while-off', 'title': '신한은행 고객정보 유출 사고 확인'}
         restarted.enqueue([newer])
         calls = []
         def sender(token, article):
@@ -210,7 +210,7 @@ class NotificationTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.queue = Notifications(Path(self.temp.name))
         self.queue.save_user('홍길동', 'sample-test-token')
-        self.article = dict(url='https://example.com/news', title='새 기사', source='신문',
+        self.article = dict(url='https://example.com/news', title='한국전력 개인정보 유출 사고 확인', source='신문',
                             description='설명', discovered=time.time() + 1)
 
     def test_dpapi_roundtrip_and_no_plaintext_storage(self):

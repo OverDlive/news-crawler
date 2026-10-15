@@ -12,6 +12,26 @@ def row(title, description='', published=1_800_000_000, source='신문 A'):
 
 
 class StoryTests(unittest.TestCase):
+    def test_financial_and_government_aliases_and_event_wording(self):
+        for a, b in (
+            ('신한은행 고객정보 1000명 외부 노출 사고 확인',
+             '신한 은행 개인정보 1천명 유출 사고 확인'),
+            ('식품의약품안전처 개인정보 1195명 외부 노출 사고 확인',
+             '식약처 고객정보 1195명 유출 사고 확인'),
+            ('한국인터넷진흥원 해킹 통보 후 23일 뒤 자료 요구',
+             'KISA 해킹 통보 후 23일 뒤 자료 요구'),
+            ('금융위원회 개인정보 침해사고 발생 금융사 16곳, 약 10만 건 유출',
+             '금융권 16개사 개인정보 10만건 유출…금융위, 보안체계 전면 점검'),
+            ('KISA, 해킹 통보하고 23일 뒤 자료 요구… LGU+는 다음 날 서버 변경',
+             '이훈기, KISA 해킹 대응 지연 질타…23일간 무엇 했나'),
+        ):
+            with self.subTest(a=a):
+                self.assertTrue(same_story(row(a), row(b)))
+        self.assertFalse(same_story(row('신한은행 고객정보 1000명 유출'),
+                                    row('우리은행 고객정보 1000명 유출')))
+        self.assertFalse(same_story(row('2026년 신한은행 고객정보 1000명 유출'),
+                                    row('2026년 신한은행 고객정보 2000명 유출')))
+
     def test_publisher_punctuation_aliases_and_amount_formats(self):
         a = row('한전 직원 2만4000명 개인정보 노출…고객정보는 피해 없어')
         b = row('[속보] 한국전력, 2만 4천여 명 전체 직원 개인정보 외부 노출', source='신문 B')

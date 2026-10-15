@@ -9,7 +9,7 @@ import urllib.request
 from contextlib import contextmanager
 
 from kakao_notifications import protect
-from notification_policy import prepare_queue
+from notification_policy import prepare_queue, remember_article
 
 
 class TelegramError(Exception):
@@ -185,8 +185,7 @@ class TelegramNotifications:
                 return
             for article in articles:
                 if article['discovered'] >= config['registered']:
-                    db.execute('INSERT OR IGNORE INTO deliveries(chat_id,url,article) VALUES(?,?,?)',
-                               (config['chat_id'], article['url'], json.dumps(article, ensure_ascii=False)))
+                    remember_article(db, 'chat_id', config['chat_id'], article)
             prepare_queue(db, 'chat_id', config['chat_id'])
 
     def status(self):
@@ -216,11 +215,10 @@ class TelegramNotifications:
                     db.execute('INSERT INTO deliveries(chat_id,url,article) VALUES(?,?,?)',
                                (config['chat_id'], key, json.dumps(article, ensure_ascii=False)))
                 else:
-                    prepare_queue(db, 'chat_id', config['chat_id'])
-                    row = db.execute("SELECT url,article FROM deliveries WHERE chat_id=? AND state='pending' ORDER BY rowid LIMIT 1", (config['chat_id'],)).fetchone()
-                    if row is None:
+                    pending = prepare_queue(db, 'chat_id', config['chat_id'])
+                    if not pending:
                         return
-                    key, article = row['url'], json.loads(row['article'])
+                    key, article = pending[0]
                 db.execute("UPDATE deliveries SET state='sending',claimed=? WHERE chat_id=? AND url=?", (now, config['chat_id'], key))
                 db.execute('UPDATE settings SET next_send=? WHERE id=1', (now + 4,))
             state, detail, wait = 'unknown', '전송 결과 불명: 방에서 확인하세요. 자동 재전송하지 않습니다.', 4

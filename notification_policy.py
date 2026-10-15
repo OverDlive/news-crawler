@@ -3,6 +3,7 @@ import json
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from news_dedup import same_story
+from news_importance import MIN_SHARE_SCORE, share_priority
 
 
 def canonical_url(url):
@@ -31,6 +32,25 @@ def duplicate(left, right):
     return False
 
 
+def remember_article(db, owner_column, owner, article):
+    """Refresh evidence as background grouping improves, preserving delivery state."""
+    row = db.execute(f'SELECT article,state FROM deliveries WHERE {owner_column}=? AND url=?',
+                     (owner, article['url'])).fetchone()
+    if row:
+        old = json.loads(row[0])
+        snapshot = dict(article if row[1] in ('pending', 'filtered') else old)
+        # Retain body-derived group membership even if later keyword views shrink.
+        related = {member['url']: {key: value for key, value in member.items()
+                                  if key not in ('related_articles', 'body')}
+                   for member in [*members(old), *members(article)]}
+        snapshot['related_articles'] = list(related.values())
+        db.execute(f'UPDATE deliveries SET article=? WHERE {owner_column}=? AND url=?',
+                   (json.dumps(snapshot, ensure_ascii=False), owner, article['url']))
+    else:
+        db.execute(f'INSERT INTO deliveries({owner_column},url,article) VALUES(?,?,?)',
+                   (owner, article['url'], json.dumps(article, ensure_ascii=False)))
+
+
 def prepare_queue(db, owner_column, owner):
     """Run inside BEGIN IMMEDIATE before claiming, including legacy pending rows.
 
@@ -42,15 +62,20 @@ def prepare_queue(db, owner_column, owner):
     anchors = [json.loads(row[1]) for row in rows
                if row[2] in ('sent', 'sending', 'unknown') and not row[0].startswith('test:')]
     pending = [(row[0], json.loads(row[1])) for row in rows
-               if row[2] == 'pending' and not row[0].startswith('test:')]
+               if row[2] in ('pending', 'filtered') and not row[0].startswith('test:')]
+    pending.sort(key=lambda item: share_priority(item[1])[0], reverse=True)
     accepted = []
     for url, article in pending:
         if any(duplicate(article, anchor) for anchor in anchors):
             state, detail = 'skipped', '같은 뉴스의 공유 이력 또는 대기 기사가 있어 제외'
         else:
-            state, detail = 'pending', ''
-            anchors.append(article)
-            accepted.append((url, article))
+            score, reason = share_priority(article)
+            if score < MIN_SHARE_SCORE:
+                state, detail = 'filtered', f'중요도 제외 ({score}점): {reason}'
+            else:
+                state, detail = 'pending', f'공유 중요도 {score}점: {reason}'
+                anchors.append(article)
+                accepted.append((url, article))
         db.execute(f'UPDATE deliveries SET state=?,detail=? WHERE {owner_column}=? AND url=?',
                    (state, detail, owner, url))
     return accepted

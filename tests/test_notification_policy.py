@@ -74,10 +74,14 @@ class StoryDeliveryTests(unittest.TestCase):
         self.drain(self.kakao, calls)
         self.assertEqual(len(calls), 2)
 
-    def test_no_importance_filter_and_paid_broadcast_disabled(self):
+    def test_low_importance_filtered_and_paid_broadcast_disabled(self):
         article = {**self.article, 'title': '지역 문화 행사 개최'}
         self.telegram.enqueue([article])
         calls = []
+        self.drain(self.telegram, calls)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.telegram.status()[0]['state'], 'filtered')
+        self.telegram.enqueue([self.article])
         self.drain(self.telegram, calls)
         self.assertEqual(len(calls), 1)
         self.assertIs(calls[0]['allow_paid_broadcast'], False)
@@ -93,4 +97,52 @@ class StoryDeliveryTests(unittest.TestCase):
         self.assertEqual(calls, [])
         with self.telegram.connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM deliveries WHERE state='pending'").fetchone()[0], 0)
+
+    def test_importance_gate_both_channels_and_priority(self):
+        for service in (self.kakao, self.telegram):
+            low = {**self.article, 'url': 'https://example.com/low', 'title': '사이버 공격 방어 대회 개최'}
+            outage = {**self.article, 'url': 'https://example.com/outage', 'title': '은행 결제 서비스 장애 발생'}
+            service.enqueue([low, self.article, outage])
+            calls = []
+            self.drain(service, calls)
+            if service is self.kakao:
+                self.assertEqual(calls, [outage['url'], self.article['url']])
+            else:
+                self.assertIn(outage['title'], calls[0]['text'])
+                self.drain(service, calls)
+                self.assertEqual(len(calls), 2)
+            with service.connect() as db:
+                self.assertEqual(db.execute("SELECT state FROM deliveries WHERE url=?", (low['url'],)).fetchone()[0], 'filtered')
+
+    def test_body_group_evidence_arriving_after_send_survives_restart(self):
+        for service, cls in ((self.kakao, Notifications), (self.telegram, TelegramNotifications)):
+            alias = {**self.article, 'url': 'https://other.com/body', 'title': '당국 후속 대응 현황'}
+            service.enqueue([self.article])
+            calls = []
+            self.drain(service, calls)
+            grouped = {**self.article, 'related_articles': [self.article, alias]}
+            for _ in range(4):
+                service.enqueue([grouped])
+            restarted = cls(self.directory)
+            restarted.enqueue([alias])
+            self.drain(restarted, calls)
+            self.assertEqual(len(calls), 1)
+            with restarted.connect() as db:
+                raw = db.execute('SELECT article FROM deliveries WHERE url=?', (self.article['url'],)).fetchone()[0]
+                self.assertLess(len(raw), 4000)
+                members = json.loads(raw)['related_articles']
+                self.assertEqual(len(members), 2)
+                self.assertTrue(all('related_articles' not in member for member in members))
+
+    def test_legacy_low_importance_pending_is_filtered_before_send(self):
+        for service, owner, value in ((self.kakao, 'recipient', 1), (self.telegram, 'chat_id', -100)):
+            low = {**self.article, 'title': '지역 문화 행사 개최'}
+            with service.connect() as db:
+                db.execute(f'INSERT INTO deliveries({owner},url,article) VALUES(?,?,?)',
+                           (value, low['url'], json.dumps(low)))
+            calls = []
+            self.drain(service, calls)
+            self.assertEqual(calls, [])
+            with service.connect() as db:
+                self.assertEqual(db.execute('SELECT state FROM deliveries').fetchone()[0], 'filtered')
 

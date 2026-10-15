@@ -288,7 +288,7 @@ class GuiTests(unittest.TestCase):
                 yield child
                 yield from descendants(child)
         buttons = [w for w in descendants(win) if isinstance(w, ThemedButton)]
-        self.assertEqual(len(buttons), 6)
+        self.assertEqual(len(buttons), 7)
         for button in buttons:
             if button.cget('text') != '닫기':
                 self.assertEqual(button.cget('state'), 'disabled')
@@ -296,6 +296,54 @@ class GuiTests(unittest.TestCase):
         self.assertIs(self.app.telegram_window, win)
         next(b for b in buttons if b.cget('text') == '닫기').invoke()
         self.assertIsNone(self.app.telegram_window)
+
+    def test_queue_reset_buttons_confirm_and_target_the_active_destination(self):
+        from tkinter import ttk
+
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+
+        self.app.demo = False
+        self.app.next_fetch = self.app.telegram_next = self.app.kakao_next = time.monotonic() + 3600
+        self.app.notifications.save_user('초기화 대상', 'test-reset-token', enabled=False)
+        self.app.kakao_settings()
+        self.root.update()
+        widgets = list(descendants(self.app.kakao_window))
+        button = next(w for w in widgets if isinstance(w, ThemedButton) and w.cget('text') == '공유 대기열 초기화')
+        self.assertEqual(button.cget('state'), 'disabled')
+        tree = next(w for w in widgets if isinstance(w, ttk.Treeview))
+        user = self.app.notifications.users()[0][0]
+        tree.selection_set(str(user))
+        self.root.update()
+        with patch('kakao_editor.messagebox.askyesno', return_value=False), \
+             patch.object(self.app.notifications, 'reset_queue') as reset:
+            button.invoke()
+            reset.assert_not_called()
+        with patch('kakao_editor.messagebox.askyesno', return_value=True), \
+             patch.object(self.app.notifications, 'reset_queue') as reset:
+            button.invoke()
+            reset.assert_called_once_with(user)
+
+        self.app.telegram_settings()
+        self.root.update()
+        button = next(w for w in descendants(self.app.telegram_window)
+                      if isinstance(w, ThemedButton) and w.cget('text') == '공유 대기열 초기화')
+        with patch('telegram_editor.messagebox.askyesno', return_value=False), \
+             patch.object(self.app.telegram, 'reset_queue') as reset:
+            button.invoke()
+            reset.assert_not_called()
+        with patch('telegram_editor.messagebox.askyesno', return_value=True), \
+             patch.object(self.app.telegram, 'reset_queue') as reset:
+            button.invoke()
+            deadline = time.monotonic() + 3
+            while button.cget('state') == 'disabled' and time.monotonic() < deadline:
+                self.root.update()
+                time.sleep(.02)
+            reset.assert_called_once_with()
+            self.assertEqual(button.cget('state'), 'normal')
+        self.app.demo = True
 
     def test_kakao_subscription_can_toggle_by_button_and_state_cell(self):
         from tkinter import ttk

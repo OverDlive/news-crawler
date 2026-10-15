@@ -9,7 +9,8 @@ import urllib.request
 from contextlib import contextmanager
 
 from kakao_notifications import protect
-from notification_policy import prepare_queue, remember_article
+from notification_policy import initialize_cutoffs, prepare_queue, remember_article, reset_queue
+from news_digest import select_digest, telegram_text as article_text, delivery_detail
 
 
 class TelegramError(Exception):
@@ -50,21 +51,12 @@ def api(token, method, fields=None):
     return result.get('result')
 
 
-def article_text(article):
-    # Plain text avoids HTML/Markdown injection and UTF-16 length surprises.
-    def clipped(value, units):
-        return str(value).encode('utf-16-le')[:units * 2].decode('utf-16-le', errors='ignore')
-    return (clipped(article.get('title', ''), 500) + '\n' +
-            clipped(article.get('source', ''), 100) + '\n\n' +
-            clipped(article.get('description', ''), 600) + '\n\n' +
-            clipped(article['url'], 1500))
-
-
 class TelegramNotifications:
     def __init__(self, directory):
         self.path = directory / 'telegram.sqlite3'
         self.lock = threading.RLock()
         with self.connect() as db:
+            initialize_cutoffs(db)
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS settings (
                     id INTEGER PRIMARY KEY CHECK(id=1), token TEXT NOT NULL DEFAULT '',
@@ -176,6 +168,14 @@ class TelegramNotifications:
         with self.lock, self.connect() as db:
             db.execute('UPDATE settings SET enabled=0 WHERE id=1')
 
+    def reset_queue(self):
+        with self.lock, self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            chat_id = db.execute('SELECT chat_id FROM settings WHERE id=1').fetchone()[0]
+            if chat_id is None:
+                raise ValueError('공유 대상 방을 먼저 설정하세요.')
+            return reset_queue(db, 'chat_id', chat_id)
+
     def enqueue(self, articles):
         # Enqueue runs on the GUI thread; never wait for a network worker's lock.
         with self.connect() as db:
@@ -214,12 +214,15 @@ class TelegramNotifications:
                     key = 'test:' + str(time.time_ns())
                     db.execute('INSERT INTO deliveries(chat_id,url,article) VALUES(?,?,?)',
                                (config['chat_id'], key, json.dumps(article, ensure_ascii=False)))
+                    batch = [(key, article)]
                 else:
                     pending = prepare_queue(db, 'chat_id', config['chat_id'])
                     if not pending:
                         return
-                    key, article = pending[0]
-                db.execute("UPDATE deliveries SET state='sending',claimed=? WHERE chat_id=? AND url=?", (now, config['chat_id'], key))
+                    batch, article = select_digest(pending, max_articles=10,
+                        fits=lambda item: len(article_text(item).encode('utf-16-le')) // 2 <= 4096)
+                db.executemany("UPDATE deliveries SET state='sending',claimed=? WHERE chat_id=? AND url=?",
+                               [(now, config['chat_id'], key) for key, _ in batch])
                 db.execute('UPDATE settings SET next_send=? WHERE id=1', (now + 4,))
             state, detail, wait = 'unknown', '전송 결과 불명: 방에서 확인하세요. 자동 재전송하지 않습니다.', 4
             try:
@@ -238,8 +241,9 @@ class TelegramNotifications:
                 # Do not log raw exceptions or automatically repeat ambiguous deliveries.
                 pass
             with self.connect() as db:
-                db.execute('UPDATE deliveries SET state=?,detail=? WHERE chat_id=? AND url=?',
-                           (state, detail, config['chat_id'], key))
+                detail = delivery_detail(article, detail)
+                db.executemany('UPDATE deliveries SET state=?,detail=? WHERE chat_id=? AND url=?',
+                               [(state, detail, config['chat_id'], key) for key, _ in batch])
                 db.execute('UPDATE settings SET next_send=?,detail=? WHERE id=1', (time.time() + wait, detail))
                 if state in ('failed', 'unknown'):
                     db.execute('UPDATE settings SET enabled=0 WHERE id=1')

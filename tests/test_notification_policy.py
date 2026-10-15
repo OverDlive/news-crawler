@@ -25,12 +25,71 @@ class StoryDeliveryTests(unittest.TestCase):
 
     def drain(self, service, calls):
         if isinstance(service, Notifications):
-            service.deliver(sender=lambda token, article: (calls.append(article['url']) or ('sent', 'OK')))
+            service.deliver(sender=lambda token, article:
+                            (calls.extend(item['url'] for item in article.get('digest_articles', [article]))
+                             or ('sent', 'OK')))
         else:
             with service.connect() as db:
                 db.execute('UPDATE settings SET next_send=0')
             with patch('telegram_notifications.protect', return_value='token'):
                 service.deliver(request=lambda token, method, fields: (calls.append(fields) or {'message_id': 1}))
+
+    def test_reset_survives_restart_blocks_backfill_and_shares_only_new_articles(self):
+        cutoff = time.time() + 100
+        for service, cls in ((self.kakao, Notifications), (self.telegram, TelegramNotifications)):
+            with self.subTest(channel=cls.__name__):
+                service.enqueue([self.article])
+                with patch('notification_policy.time.time', return_value=cutoff):
+                    count = service.reset_queue(1) if service is self.kakao else service.reset_queue()
+                self.assertEqual(count, 1)
+                restarted = cls(self.directory)
+                # Include an old article not previously enqueued, and the exact boundary.
+                restarted.enqueue([self.article,
+                    {**self.article, 'url': 'https://example.com/backfill'},
+                    {**self.article, 'url': 'https://example.com/boundary', 'discovered': cutoff}])
+                calls = []
+                self.drain(restarted, calls)
+                self.assertEqual(calls, [])
+                with restarted.connect() as db:
+                    self.assertEqual(db.execute('SELECT state FROM deliveries').fetchone()[0], 'reset')
+                    self.assertEqual(db.execute('SELECT COUNT(*) FROM deliveries').fetchone()[0], 1)
+                # A new URL for even the same story is eligible after a reset if never sent.
+                restarted.enqueue([{**self.article, 'url': 'https://example.com/new',
+                                    'discovered': cutoff + 1}])
+                self.drain(restarted, calls)
+                self.assertEqual(len(calls), 1)
+
+    def test_reset_keeps_sent_and_uncertain_history_as_duplicate_anchors(self):
+        cutoff = time.time() + 100
+        for service, owner, value in ((self.kakao, 'recipient', 1), (self.telegram, 'chat_id', -100)):
+            for state in ('sent', 'sending', 'unknown', 'failed', 'filtered', 'pending'):
+                article = {**self.article, 'url': f'https://example.com/{state}'}
+                with service.connect() as db:
+                    db.execute(f'INSERT INTO deliveries({owner},url,article,state) VALUES(?,?,?,?)',
+                               (value, article['url'], json.dumps(article), state))
+            with patch('notification_policy.time.time', return_value=cutoff):
+                service.reset_queue(1) if service is self.kakao else service.reset_queue()
+            with service.connect() as db:
+                rows = dict(db.execute('SELECT url,state FROM deliveries'))
+            for state in ('sent', 'sending', 'unknown'):
+                self.assertEqual(rows[f'https://example.com/{state}'], state)
+            for state in ('failed', 'filtered', 'pending'):
+                self.assertEqual(rows[f'https://example.com/{state}'], 'reset')
+            service.enqueue([{**self.article, 'url': 'https://example.com/new', 'discovered': cutoff + 1}])
+            with service.connect() as db:
+                self.assertEqual(db.execute("SELECT state FROM deliveries WHERE url='https://example.com/new'").fetchone()[0], 'skipped')
+
+    def test_reset_is_scoped_to_selected_recipient_and_preserves_subscription(self):
+        self.kakao.save_user('다른 사용자', 'test-other')
+        self.kakao.enqueue([self.article])
+        before = self.kakao.users()
+        self.kakao.reset_queue(1)
+        self.assertEqual(self.kakao.users(), before)
+        with self.kakao.connect() as db:
+            self.assertEqual(list(db.execute('SELECT recipient,state FROM deliveries ORDER BY recipient')),
+                             [(1, 'reset'), (2, 'pending')])
+        with self.assertRaises(ValueError):
+            self.kakao.reset_queue(999)
 
     def test_same_story_new_url_suppressed_after_restart_both_channels(self):
         for service, cls in ((self.kakao, Notifications), (self.telegram, TelegramNotifications)):

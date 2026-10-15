@@ -2,7 +2,7 @@
 import queue
 import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 
 from telegram_notifications import TelegramError
 
@@ -25,7 +25,7 @@ def open_telegram_editor(app):
     instructions = ('1. BotFather에서 만든 봇을 단체방에 초대하세요. 채널은 게시 권한을 주세요.\n'
                     '2. 토큰 입력 후 방 찾기를 누르세요. 방이 없으면 단체방에서 /start@봇이름을\n'
                     '   보내거나 채널에 새 게시물을 올린 뒤 다시 방 찾기를 누르세요.\n'
-                    '3. 대상 방을 선택하고 자동 공유 시작을 누르세요. 방 ID 입력은 필요 없습니다.')
+                    '3. 대상 방 선택 후 자동 공유 시작을 누르세요. 같은 기관의 대기 뉴스를 묶어 보냅니다.')
     app.label(body, instructions, 10, c['muted'], justify='left', anchor='w',
               wraplength=640).pack(fill='x', pady=(10, 12))
     app.label(body, '봇 토큰 · 저장 후 빈칸은 기존 토큰 사용', 11).pack(anchor='w')
@@ -97,6 +97,19 @@ def open_telegram_editor(app):
         button = app.button(actions, title, operation, title == '자동 공유 시작')
         button.pack(side='left', padx=(0, 6))
         buttons.append(button)
+    def reset_sharing():
+        if busy[0] or app.demo:
+            return
+        if not messagebox.askyesno('공유 대기열 초기화',
+                '현재 공유 대상 방의 기존 대기·실패 기사를 공유에서 제외합니다.\n'
+                '설정·수집 기사·공유 이력은 유지하며, 초기화 이후 발견한 기사부터 공유합니다.\n'
+                '이미 전송 중인 메시지는 취소되지 않습니다. 초기화할까요?', parent=win):
+            return
+        launch(app.telegram.reset_queue,
+               '대기열을 초기화했습니다. 초기화 이후 발견한 기사부터 공유합니다. 공유 중지 상태라면 자동 공유 시작을 누르세요.')
+    reset_button = app.button(body, '공유 대기열 초기화', reset_sharing)
+    reset_button.pack(anchor='w', pady=(4, 0))
+    buttons.append(reset_button)
     feedback.pack(fill='x', pady=6)
     app.label(body, '프로그램 실행 중에만 공유합니다. 기존 카카오 알림도 계속 동작합니다.\n'
               '결과 불명인 기사는 중복 방지를 위해 자동 재전송하지 않습니다.\n'
@@ -107,7 +120,7 @@ def open_telegram_editor(app):
                       wrap='word', relief='flat', state='disabled')
     history.pack(fill='both', expand=True)
     snapshot = [None]
-    states = {'pending': '대기', 'sending': '전송 중', 'sent': '성공', 'failed': '실패', 'unknown': '결과 불명', 'skipped': '중복 제외', 'filtered': '중요도 제외'}
+    states = {'pending': '대기', 'sending': '전송 중', 'sent': '성공', 'failed': '실패', 'unknown': '결과 불명', 'skipped': '중복 제외', 'filtered': '중요도 제외', 'reset': '초기화 제외'}
 
     def refresh():
         try:

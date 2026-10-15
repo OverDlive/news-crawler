@@ -1,9 +1,28 @@
 """Shared durable story suppression for news notifications."""
 import json
+import time
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from news_dedup import same_story
 from news_importance import MIN_SHARE_SCORE, share_priority
+
+
+def initialize_cutoffs(db):
+    db.execute('CREATE TABLE IF NOT EXISTS sharing_cutoffs (owner TEXT PRIMARY KEY, cutoff REAL NOT NULL)')
+
+
+def sharing_cutoff(db, owner):
+    row = db.execute('SELECT cutoff FROM sharing_cutoffs WHERE owner=?', (str(owner),)).fetchone()
+    return row[0] if row else None
+
+
+def reset_queue(db, owner_column, owner):
+    """Caller holds BEGIN IMMEDIATE; retain sent and uncertain delivery evidence."""
+    db.execute('INSERT OR REPLACE INTO sharing_cutoffs(owner,cutoff) VALUES(?,?)',
+               (str(owner), time.time()))
+    return db.execute(f"UPDATE deliveries SET state='reset',detail='대기열 초기화로 공유 제외' "
+                      f"WHERE {owner_column}=? AND state IN ('pending','filtered','failed','skipped')",
+                      (owner,)).rowcount
 
 
 def canonical_url(url):
@@ -36,6 +55,9 @@ def remember_article(db, owner_column, owner, article):
     """Refresh evidence as background grouping improves, preserving delivery state."""
     row = db.execute(f'SELECT article,state FROM deliveries WHERE {owner_column}=? AND url=?',
                      (owner, article['url'])).fetchone()
+    cutoff = sharing_cutoff(db, owner)
+    if not row and cutoff is not None and article.get('discovered', 0) <= cutoff:
+        return
     if row:
         old = json.loads(row[0])
         snapshot = dict(article if row[1] in ('pending', 'filtered') else old)
@@ -65,8 +87,11 @@ def prepare_queue(db, owner_column, owner):
                if row[2] in ('pending', 'filtered') and not row[0].startswith('test:')]
     pending.sort(key=lambda item: share_priority(item[1])[0], reverse=True)
     accepted = []
+    cutoff = sharing_cutoff(db, owner)
     for url, article in pending:
-        if any(duplicate(article, anchor) for anchor in anchors):
+        if cutoff is not None and article.get('discovered', 0) <= cutoff:
+            state, detail = 'reset', '대기열 초기화 이전 기사로 공유 제외'
+        elif any(duplicate(article, anchor) for anchor in anchors):
             state, detail = 'skipped', '같은 뉴스의 공유 이력 또는 대기 기사가 있어 제외'
         else:
             score, reason = share_priority(article)

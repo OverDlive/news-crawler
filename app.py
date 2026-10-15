@@ -673,7 +673,7 @@ class NewsMonitor:
             if event[0] == 'grouped':
                 self.grouping_busy = False
                 self.store.save_comparisons(event[1])
-                refresh = True
+                refresh = notify = True
             elif event[0] == 'notifications_done':
                 self.notification_enqueue_busy = False
                 if event[2]:
@@ -1470,6 +1470,15 @@ def main():
             app.close()
             return 1
         logging.info('Body similarity smoke test passed')
+        from news_digest import select_digest, telegram_text
+        from kakao_notifications import memo_template
+        digest_rows = [(f'https://example.com/test-{i}',
+                        {'url': f'https://example.com/test-{i}',
+                         'title': f'[테스트] 한전 소식 {i}', 'source': '검증'}) for i in range(3)]
+        batch, digest = select_digest(digest_rows, max_articles=3)
+        assert len(batch) == 3 and len(memo_template(digest)['contents']) == 3
+        assert all(url in telegram_text(digest) for url, _ in batch)
+        logging.info('Institution digest smoke test passed')
         root.after(1200, app.close)
     if updates_enabled:
         def check_updates():

@@ -10,6 +10,7 @@ with tempfile.TemporaryDirectory(prefix='news-exe-smoke-') as directory:
     log = (Path(directory) / 'monitor.log').read_text(encoding='utf-8')
     assert 'News monitor started' in log and 'News monitor closing' in log, log
     assert 'Body similarity smoke test passed' in log, log
+    assert 'Institution digest smoke test passed' in log, log
     assert 'ERROR' not in log and 'Traceback' not in log, log
     assert (Path(directory) / 'news.sqlite3').is_file()
 print('Packaged GUI smoke test passed.')

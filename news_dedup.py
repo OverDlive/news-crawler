@@ -57,7 +57,11 @@ def _event_features(title):
 
 @lru_cache(maxsize=8192)
 def _quantities(title):
-    values = re.findall(r'(\d+)(명|건|개사|곳|억원|만원|원|%)', normalize(title))
+    title = normalize(title)
+    # A changed count is identified by the new total, not its historical value.
+    title = re.sub(r'\d+(명|건)?(?:→|->|에서)(\d+)(명|건)',
+                   lambda m: m[2] + m[3] if not m[1] or m[1] == m[3] else m[0], title)
+    values = re.findall(r'(\d+)(명|건|개사|곳|억원|만원|원|%)', title)
     return frozenset((number, '기관' if unit in ('개사', '곳') else unit)
                      for number, unit in values)
 
@@ -134,7 +138,13 @@ def deduplicate(rows, body_matches=None):
     def matches(left, right):
         key = tuple(sorted((left['url'], right['url'])))
         if key in body_matches:
-            return body_matches[key] >= .82
+            score = body_matches[key]
+            if score < 0:  # Explicit conflict in company, victim count or event.
+                return False
+            if score >= .82:
+                return True
+            # Low text overlap is inconclusive for paraphrased reports. It must
+            # not split articles already established as the same titled event.
         return same_story(left, right)
     for row in rows:
         # Full bodies belong in the extraction cache, not cards/notification JSON.

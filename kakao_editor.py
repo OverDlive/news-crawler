@@ -30,7 +30,7 @@ def open_kakao_editor(app):
     app.label(header, '카카오 알림', 22).pack(side='left')
     app.label(header, '데모 · 발송 중지' if app.demo else '새 기사 자동 알림', 10,
               c['warning'] if app.demo else c['accent']).pack(side='right')
-    app.label(outer, '등록한 사용자에게 새 기사 제목·요약·링크를 나와의 채팅방으로 보냅니다.',
+    app.label(outer, '같은 기관의 중요 뉴스를 묶어 제목·원문 링크를 나와의 채팅방으로 보냅니다.',
               11, c['muted'], anchor='w').grid(row=1, column=0, sticky='ew', pady=(0, GAP))
 
     content = tk.Frame(outer, bg=c['bg'])
@@ -111,6 +111,7 @@ def open_kakao_editor(app):
         count.configure(text=f'{len(users)}명 등록 · {sum(bool(u[2]) for u in users)}명 수신 중')
         remove_button.configure(state='normal' if selected() else 'disabled')
         retry_button.configure(state='normal' if selected() and not app.demo else 'disabled')
+        reset_button.configure(state='normal' if selected() and not app.demo else 'disabled')
         refresh_button.configure(state='normal' if selected() else 'disabled')
         test_button.configure(state='normal' if selected() and not app.demo and not app.kakao_busy else 'disabled')
         user = selected()
@@ -299,10 +300,28 @@ def open_kakao_editor(app):
     app.label(log, '전송 내역', 15).grid(row=0, column=0, sticky='w')
     retry_button = app.button(log, '선택 실패건 재시도', retry)
     retry_button.grid(row=0, column=1, sticky='e')
+    def reset_sharing():
+        user = selected()
+        if not user or app.demo:
+            return
+        if not messagebox.askyesno('공유 대기열 초기화',
+                f'{user[1]}님의 기존 대기·실패 기사를 공유에서 제외합니다.\n'
+                '설정·수집 기사·공유 이력은 유지하며, 초기화 이후 발견한 기사부터 공유합니다.\n'
+                '이미 전송 중인 메시지는 취소되지 않습니다. 초기화할까요?', parent=win):
+            return
+        try:
+            app.notifications.reset_queue(user[0])
+        except (ValueError, OSError, sqlite3.Error) as exc:
+            messagebox.showwarning('카카오 알림', str(exc), parent=win)
+            return
+        feedback.configure(text=f'{user[1]} · 대기열을 초기화했습니다. 이후 새 기사부터 공유합니다. 수신 OFF라면 ON으로 변경하세요.', fg=c['accent'])
+        app.kakao_next = 0
+    reset_button = app.button(log, '공유 대기열 초기화', reset_sharing)
+    reset_button.grid(row=0, column=2, sticky='e', padx=(8, 0))
     app.label(log, '실패 시 해당 사용자 수신이 중지됩니다. 결과 불명 건은 카카오톡 확인 후 재시도하세요.',
-              10, c['muted'], anchor='w').grid(row=1, column=0, columnspan=2, sticky='ew', pady=(4, 10))
+              10, c['muted'], anchor='w').grid(row=1, column=0, columnspan=3, sticky='ew', pady=(4, 10))
     history_box = tk.Frame(log, bg=c['panel'])
-    history_box.grid(row=2, column=0, columnspan=2, sticky='nsew')
+    history_box.grid(row=2, column=0, columnspan=3, sticky='nsew')
     history_box.columnconfigure(0, weight=1)
     history_box.rowconfigure(0, weight=1)
     history = tk.Text(history_box, name='kakao_history', height=5, state='disabled', wrap='word',
@@ -312,7 +331,7 @@ def open_kakao_editor(app):
     scroll = ttk.Scrollbar(history_box, orient='vertical', command=history.yview, style='Monitor.Vertical.TScrollbar')
     scroll.grid(row=0, column=1, sticky='ns')
     history.configure(yscrollcommand=scroll.set)
-    states = {'pending': '대기', 'sending': '전송 중', 'sent': 'API 전송 성공', 'failed': '실패', 'unknown': '결과 불명', 'skipped': '중복 제외', 'filtered': '중요도 제외'}
+    states = {'pending': '대기', 'sending': '전송 중', 'sent': 'API 전송 성공', 'failed': '실패', 'unknown': '결과 불명', 'skipped': '중복 제외', 'filtered': '중요도 제외', 'reset': '초기화 제외'}
     last_history = [None]
     timer = [None]
     def update_history():

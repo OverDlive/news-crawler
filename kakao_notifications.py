@@ -10,8 +10,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from notification_policy import prepare_queue, remember_article
+from notification_policy import initialize_cutoffs, prepare_queue, remember_article, reset_queue
 from news_importance import share_priority
+from news_digest import select_digest, delivery_detail
 
 
 def protect(value, decrypt=False):
@@ -37,12 +38,26 @@ def protect(value, decrypt=False):
         kernel.LocalFree(target.data)
 
 
-def send_memo(token, article):
+def memo_template(article):
+    items = article.get('digest_articles')
+    if items:
+        first_link = {'web_url': items[0]['url'], 'mobile_web_url': items[0]['url']}
+        return {'object_type': 'list',
+                'header_title': f"{article['institution']} 주요 뉴스 {len(items)}건"[:200],
+                'header_link': first_link,
+                'contents': [{'title': item['title'][:200],
+                              'description': item.get('source', '')[:100],
+                              'link': {'web_url': item['url'], 'mobile_web_url': item['url']}}
+                             for item in items]}
     url = article['url']
     text = (article['title'] + '\n' + article.get('source', '') + '\n' +
             article.get('description', ''))[:200]
-    template = {'object_type': 'text', 'text': text,
-                'link': {'web_url': url, 'mobile_web_url': url}, 'button_title': '기사 보기'}
+    return {'object_type': 'text', 'text': text,
+            'link': {'web_url': url, 'mobile_web_url': url}, 'button_title': '기사 보기'}
+
+
+def send_memo(token, article):
+    template = memo_template(article)
     payload = urllib.parse.urlencode({'template_object': json.dumps(template, ensure_ascii=False)}).encode()
     request = urllib.request.Request('https://kapi.kakao.com/v2/api/talk/memo/default/send',
         data=payload, headers={'Authorization': 'Bearer ' + token,
@@ -107,6 +122,7 @@ class Notifications:
     def __init__(self, directory):
         self.path = directory / 'kakao.sqlite3'
         with self.connect() as db:
+            initialize_cutoffs(db)
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS recipients (
                     id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL,
@@ -145,6 +161,13 @@ class Notifications:
             result = db.execute('UPDATE recipients SET enabled=? WHERE id=?', (bool(enabled), user))
             if not result.rowcount:
                 raise ValueError('사용자를 찾을 수 없습니다')
+
+    def reset_queue(self, user):
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if not db.execute('SELECT id FROM recipients WHERE id=?', (user,)).fetchone():
+                raise ValueError('사용자를 찾을 수 없습니다')
+            return reset_queue(db, 'recipient', user)
 
     def save_user(self, name, token, enabled=True):
         name, token = name.strip(), token.strip()
@@ -299,14 +322,19 @@ class Notifications:
                 if not candidates:
                     break
                 row = max(candidates, key=lambda item: share_priority(json.loads(item[2]))[0])
-                db.execute("UPDATE deliveries SET state='sending' WHERE recipient=? AND url=?", row[:2])
+                pending = sorted(((item[1], json.loads(item[2])) for item in candidates if item[0] == row[0]),
+                                 key=lambda item: share_priority(item[1])[0], reverse=True)
+                batch, article = select_digest(pending, max_articles=3)
+                db.executemany("UPDATE deliveries SET state='sending' WHERE recipient=? AND url=?",
+                               [(row[0], key) for key, _ in batch])
             try:
-                state, detail = sender(protect(row[3], decrypt=True), json.loads(row[2]))
+                state, detail = sender(protect(row[3], decrypt=True), article)
             except Exception:
                 state, detail = 'failed', '토큰을 읽거나 전송하지 못했습니다: 토큰을 다시 등록하세요'
             with self.connect() as db:
-                db.execute('UPDATE deliveries SET state=?,detail=? WHERE recipient=? AND url=?',
-                           (state, detail, row[0], row[1]))
+                detail = delivery_detail(article, detail)
+                db.executemany('UPDATE deliveries SET state=?,detail=? WHERE recipient=? AND url=?',
+                               [(state, detail, row[0], key) for key, _ in batch])
                 if state != 'sent':
                     # Stop this user's queue until the operator fixes the token/configuration.
                     db.execute('UPDATE recipients SET enabled=0 WHERE id=?', (row[0],))

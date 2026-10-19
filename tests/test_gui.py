@@ -252,7 +252,8 @@ class GuiTests(unittest.TestCase):
         self.app.next_fetch = time.monotonic() + 3600
         with patch.object(self.app.telegram, 'discover', side_effect=lambda token: original_discover(token, request=request)), \
              patch.object(self.app.telegram, 'activate', side_effect=lambda chat: original_activate(chat, request=request)), \
-             patch.object(self.app.telegram, 'deliver', side_effect=lambda **kwargs: original_deliver(request=request, **kwargs)):
+             patch.object(self.app.telegram, 'deliver', side_effect=lambda **kwargs: original_deliver(request=request, **kwargs)), \
+             patch('telegram_notifications.telegram_preview_url', side_effect=lambda article: article['url']):
             self.app.telegram_settings()
             self.root.update()
             win = self.app.telegram_window

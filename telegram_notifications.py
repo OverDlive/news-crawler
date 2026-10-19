@@ -10,7 +10,7 @@ from contextlib import contextmanager
 
 from kakao_notifications import protect
 from notification_policy import initialize_cutoffs, prepare_queue, remember_article, reset_queue
-from news_digest import select_representative, telegram_text as article_text, delivery_detail, delivery_results
+from news_digest import select_representative, telegram_text as article_text, telegram_entities, delivery_detail, delivery_results
 from news_preview import telegram_preview_url
 
 
@@ -229,6 +229,7 @@ class TelegramNotifications:
                 article = {**article, 'content_url': telegram_preview_url(article)}
                 response = request(protect(config['token'], True), 'sendMessage',
                     {'chat_id': config['chat_id'], 'text': article_text(article),
+                     'entities': telegram_entities(article),
                      'allow_paid_broadcast': False,
                      'link_preview_options': {'is_disabled': False,
                          'url': article.get('content_url') or article['url'],

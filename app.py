@@ -1472,7 +1472,7 @@ def main():
             app.close()
             return 1
         logging.info('Body similarity smoke test passed')
-        from news_digest import select_representative, telegram_text
+        from news_digest import select_representative, telegram_text, telegram_entities
         from kakao_notifications import memo_template
         digest_rows = [(f'https://example.com/test-{i}',
                         {'url': f'https://example.com/test-{i}',
@@ -1483,7 +1483,8 @@ def main():
         template = memo_template(representative)
         assert len(batch) == 3 and template['object_type'] == 'feed'
         assert template['content']['link']['web_url'] == digest_rows[-1][0]
-        assert digest_rows[-1][0] in telegram_text(representative)
+        assert telegram_entities(representative)[0]['url'] == digest_rows[-1][0]
+        assert digest_rows[-1][0] not in telegram_text(representative)
         assert digest_rows[0][0] not in telegram_text(representative)
         logging.info('Institution representative preview smoke test passed')
         root.after(1200, app.close)

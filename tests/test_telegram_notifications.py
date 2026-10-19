@@ -155,6 +155,21 @@ class TelegramTests(unittest.TestCase):
         self.queue.deliver(test=True, request=self.request)
         self.assertEqual(sorted(r['state'] for r in self.queue.status()), ['pending', 'sent'])
 
+    def test_url_is_hidden_and_preview_and_unicode_title_link_have_same_destination(self):
+        article = {**self.article, 'title': '😀 한국전력 개인정보 유출 사고 확인',
+                   'content_url': 'https://publisher.example/resolved'}
+        self.queue.enqueue([article])
+        self.queue.deliver(request=self.request)
+        fields = next(fields for method, fields in self.calls if method == 'sendMessage')
+        self.assertNotIn(article['url'], fields['text'])
+        self.assertNotIn(article['content_url'], fields['text'])
+        entity = fields['entities'][0]
+        self.assertEqual(entity['type'], 'text_link')
+        self.assertEqual(entity['offset'], 0)
+        self.assertEqual(entity['length'], len(article['title'].encode('utf-16-le')) // 2)
+        self.assertEqual(entity['url'], article['content_url'])
+        self.assertEqual(fields['link_preview_options']['url'], article['content_url'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -31,11 +31,17 @@ def clipped(value, units):
 
 
 def telegram_text(article):
-    # Plain text avoids markup injection and keeps each original article link.
-    return (clipped(article.get('title', ''), 500) + '\n' +
+    # The destination lives in a title entity and preview options, not visible text.
+    return (clipped(article.get('title') or '기사 보기', 500) + '\n' +
             clipped(article.get('source', ''), 100) + '\n\n' +
-            clipped(article.get('description', ''), 600) + '\n\n' +
-            clipped(article.get('content_url') or article['url'], 1500))
+            clipped(article.get('description', ''), 600)).rstrip()
+
+
+def telegram_entities(article):
+    title = clipped(article.get('title') or '기사 보기', 500)
+    return [{'type': 'text_link', 'offset': 0,
+             'length': len(title.encode('utf-16-le')) // 2,
+             'url': article.get('content_url') or article['url']}]
 
 
 def select_representative(pending):

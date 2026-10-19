@@ -68,11 +68,13 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(template['content']['image_url'], article['image_url'])
         self.assertEqual(template['content']['link']['web_url'], article['url'])
 
-    def test_telegram_uses_resolved_article_for_text(self):
-        from news_digest import telegram_text
-        result = telegram_text({**self.article, 'content_url': 'https://publisher.example/resolved'})
-        self.assertIn('https://publisher.example/resolved', result)
+    def test_telegram_hides_url_and_keeps_resolved_destination_in_title(self):
+        from news_digest import telegram_text, telegram_entities
+        article = {**self.article, 'content_url': 'https://publisher.example/resolved'}
+        result = telegram_text(article)
+        self.assertNotIn('https://publisher.example/resolved', result)
         self.assertNotIn(self.article['url'], result)
+        self.assertEqual(telegram_entities(article)[0]['url'], article['content_url'])
 
     def test_real_google_signed_redirect_shape_reaches_both_message_templates(self):
         google = 'https://news.google.com/rss/articles/signed-article-id'

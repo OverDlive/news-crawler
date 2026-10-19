@@ -719,14 +719,13 @@ class NewsMonitor:
             else:
                 _, revision, results, errors = event[:4]
                 metrics = event[4] if len(event) > 4 else {}
+                if revision != self.revision:
+                    continue
                 self.busy = False
                 # Arm the next cycle before storage or rendering can fail.
                 delay = 60 if errors else max(10, self.config["interval_minutes"]) * 60
                 self.next_fetch = time.monotonic() + max(delay, metrics.get('cooldown', 0))
                 self.fetch_button.configure(state="normal", text="지금 확인")
-                if revision != self.revision:
-                    self.next_fetch = time.monotonic()
-                    continue
                 new = self.cycle_added
                 try:
                     for keyword, articles in results:
@@ -839,8 +838,10 @@ class NewsMonitor:
             logging.info("Monitor resumed after %.0fs; checking news automatically", wall - self.last_tick_wall)
             self.next_fetch = time.monotonic()
             if self.busy:
-                # Discard pre-suspend work and let its cancellation event finish it.
+                # Start a fresh cycle immediately; late completion must not
+                # clear the new cycle's busy flag or replace its retry timer.
                 self.revision += 1
+                self.busy = False
         self.last_tick_wall = wall
         self.process_events()
         self.start_summaries()
@@ -1351,6 +1352,7 @@ class NewsMonitor:
                 self.config = previous
                 return
             self.revision += 1
+            self.busy = False
             remaining = {item["name"]: item for item in draft}
             for item in previous["keywords"]:
                 replacement = remaining.get(item["name"])
@@ -1470,15 +1472,20 @@ def main():
             app.close()
             return 1
         logging.info('Body similarity smoke test passed')
-        from news_digest import select_digest, telegram_text
+        from news_digest import select_representative, telegram_text
         from kakao_notifications import memo_template
         digest_rows = [(f'https://example.com/test-{i}',
                         {'url': f'https://example.com/test-{i}',
-                         'title': f'[테스트] 한전 소식 {i}', 'source': '검증'}) for i in range(3)]
-        batch, digest = select_digest(digest_rows, max_articles=3)
-        assert len(batch) == 3 and len(memo_template(digest)['contents']) == 3
-        assert all(url in telegram_text(digest) for url, _ in batch)
-        logging.info('Institution digest smoke test passed')
+                       'title': f'[테스트] 한전 소식 {i}', 'source': '검증',
+                       'published': i}) for i in range(3)]
+        batch, representative = select_representative(digest_rows)
+        representative['image_url'] = 'https://example.com/news.jpg'
+        template = memo_template(representative)
+        assert len(batch) == 3 and template['object_type'] == 'feed'
+        assert template['content']['link']['web_url'] == digest_rows[-1][0]
+        assert digest_rows[-1][0] in telegram_text(representative)
+        assert digest_rows[0][0] not in telegram_text(representative)
+        logging.info('Institution representative preview smoke test passed')
         root.after(1200, app.close)
     if updates_enabled:
         def check_updates():

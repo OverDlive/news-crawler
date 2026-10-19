@@ -23,6 +23,50 @@ class Response(BytesIO):
 
 
 class CollectionTests(unittest.TestCase):
+    def test_single_stuck_request_does_not_wait_for_large_catalog_deadline(self):
+        release = threading.Event()
+        client = NewsCollector(workers=1, fallback=True, cycle_timeout=3600,
+                               request_timeout=.1, google_request_interval=0)
+        published = []
+        try:
+            with patch.object(client, 'fetch', side_effect=lambda *args: release.wait(3)), \
+                    patch.object(client, 'fetch_bing', return_value=[]):
+                started = time.monotonic()
+                report = client.collect([{'name': 'news'}], on_result=lambda n, a: published.append(n))
+                self.assertLess(time.monotonic() - started, 1)
+                self.assertEqual(report.provider, 'bing')
+                self.assertFalse(report.errors)
+                self.assertEqual(published, ['news'])
+        finally:
+            release.set()
+
+    def test_repeated_timeouts_keep_fixed_worker_limit_and_recover_when_released(self):
+        release = threading.Event()
+        client = NewsCollector(workers=2, cycle_timeout=3600, request_timeout=.1,
+                               google_request_interval=0)
+        calls = []
+        def stuck(query, hours):
+            calls.append(query)
+            release.wait(3)
+            return []
+        try:
+            with patch.object(client, 'fetch', side_effect=stuck):
+                for _ in range(8):
+                    # Simulate cooldown expiry across hours of unattended retries.
+                    client.cooldown_until = 0
+                    report = client.collect([{'name': 'one'}, {'name': 'two'}])
+                    self.assertTrue(report.errors)
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(len(client.inflight['google']), 2)
+                release.set()
+                for future in tuple(client.inflight['google']):
+                    future.result(timeout=2)
+            client.cooldown_until = 0
+            with patch.object(client, 'fetch', return_value=[]):
+                self.assertFalse(client.collect([{'name': 'recovered'}]).errors)
+        finally:
+            release.set()
+
     def test_stuck_primary_times_out_and_bing_recovers_without_late_callbacks(self):
         release, finished = threading.Event(), threading.Event()
         client = NewsCollector(workers=1, fallback=True, cycle_timeout=.15, google_request_interval=0)

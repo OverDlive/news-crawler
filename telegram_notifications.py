@@ -10,7 +10,8 @@ from contextlib import contextmanager
 
 from kakao_notifications import protect
 from notification_policy import initialize_cutoffs, prepare_queue, remember_article, reset_queue
-from news_digest import select_digest, telegram_text as article_text, delivery_detail
+from news_digest import select_representative, telegram_text as article_text, delivery_detail, delivery_results
+from news_preview import telegram_preview_url
 
 
 class TelegramError(Exception):
@@ -219,19 +220,21 @@ class TelegramNotifications:
                     pending = prepare_queue(db, 'chat_id', config['chat_id'])
                     if not pending:
                         return
-                    batch, article = select_digest(pending, max_articles=10,
-                        fits=lambda item: len(article_text(item).encode('utf-16-le')) // 2 <= 4096)
+                    batch, article = select_representative(pending)
                 db.executemany("UPDATE deliveries SET state='sending',claimed=? WHERE chat_id=? AND url=?",
                                [(now, config['chat_id'], key) for key, _ in batch])
                 db.execute('UPDATE settings SET next_send=? WHERE id=1', (now + 4,))
             state, detail, wait = 'unknown', '전송 결과 불명: 방에서 확인하세요. 자동 재전송하지 않습니다.', 4
             try:
+                article = {**article, 'content_url': telegram_preview_url(article)}
                 response = request(protect(config['token'], True), 'sendMessage',
                     {'chat_id': config['chat_id'], 'text': article_text(article),
                      'allow_paid_broadcast': False,
-                     'link_preview_options': {'is_disabled': True}})
+                     'link_preview_options': {'is_disabled': False,
+                         'url': article.get('content_url') or article['url'],
+                         'prefer_large_media': True}})
                 if isinstance(response, dict) and type(response.get('message_id')) is int:
-                    state, detail = 'sent', '텔레그램 API 전송 성공'
+                    state, detail = 'sent', '텔레그램 API 전송 성공 · 기사 링크 미리보기 요청'
             except TelegramError as exc:
                 if exc.code == 429:
                     state, detail, wait = 'pending', str(exc), max(4, exc.retry_after)
@@ -243,7 +246,7 @@ class TelegramNotifications:
             with self.connect() as db:
                 detail = delivery_detail(article, detail)
                 db.executemany('UPDATE deliveries SET state=?,detail=? WHERE chat_id=? AND url=?',
-                               [(state, detail, config['chat_id'], key) for key, _ in batch])
+                               delivery_results(batch, article, state, detail, config['chat_id']))
                 db.execute('UPDATE settings SET next_send=?,detail=? WHERE id=1', (time.time() + wait, detail))
                 if state in ('failed', 'unknown'):
                     db.execute('UPDATE settings SET enabled=0 WHERE id=1')

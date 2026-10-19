@@ -28,10 +28,16 @@ class ArticleHTML(HTMLParser):
         self.script = None
         self.links = []
         self.targets = []
+        self.images = []
+        self.twitter_images = []
+        self.google_parameters = None
         self.anchor = None
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        if attrs.get('data-n-a-sg') and attrs.get('data-n-a-ts'):
+            self.google_parameters = (attrs.get('data-n-a-id', ''),
+                                      attrs['data-n-a-ts'], attrs['data-n-a-sg'])
         marker = ' '.join((attrs.get('id', ''), attrs.get('class', ''), attrs.get('itemprop', ''))).lower()
         hidden = tag in ('style', 'script', 'nav', 'footer', 'header', 'aside', 'button', 'noscript')
         hidden = hidden or bool(re.search(r'comment|related|recommend|advert|copyright', marker))
@@ -40,6 +46,12 @@ class ArticleHTML(HTMLParser):
             self.stack.append((tag, hidden, body))
         if tag == 'script' and attrs.get('type', '').lower() == 'application/ld+json':
             self.script = []
+        if tag == 'meta':
+            name = (attrs.get('property') or attrs.get('name', '')).lower()
+            if name in ('og:image', 'og:image:url', 'og:image:secure_url'):
+                self.images.append(attrs.get('content', ''))
+            elif name in ('twitter:image', 'twitter:image:src'):
+                self.twitter_images.append(attrs.get('content', ''))
         if tag == 'meta' and attrs.get('property', '').lower() == 'og:url':
             self.targets.append(attrs.get('content', ''))
         if tag == 'link' and attrs.get('rel', '').lower() == 'canonical':
@@ -147,30 +159,76 @@ class ArticleSummarizer:
             parser.feed(data.decode(charset, errors='replace'))
             return parser, response.geturl()
 
+    def read_article(self, row):
+        try:
+            parser, url = self.read(row['url'])
+        except Exception:
+            if urllib.parse.urlsplit(row['url']).hostname != 'news.google.com':
+                raise
+            target = self.publisher_link(row)
+            if not target:
+                raise
+            parser, url = self.read(target)
+        if urllib.parse.urlsplit(url).hostname == 'news.google.com':
+            # Follow only explicit publisher links; never summarize Google's UI.
+            targets = parser.targets + [href for href, label in parser.links
+                                         if label == row['title']]
+            target = next((urllib.parse.urljoin(url, t) for t in targets
+                           if valid_link(urllib.parse.urljoin(url, t)) and
+                           urllib.parse.urlsplit(urllib.parse.urljoin(url, t)).hostname != 'news.google.com'), '')
+            if not target:
+                try:
+                    target = self.google_publisher_link(parser, url)
+                except (OSError, ValueError, TypeError, IndexError):
+                    target = ''
+            if not target:
+                target = self.publisher_link(row)
+            if not target:
+                raise ValueError('원문 연결 주소 없음')
+            parser, url = self.read(target)
+        return parser, url
+
+    def google_publisher_link(self, parser, url):
+        """Resolve Google's signed article redirect rather than its generic OG card.
+
+        The RPC is undocumented; explicit publisher links and verified search
+        results remain fallbacks if Google changes its response format.
+        """
+        if not parser.google_parameters:
+            return ''
+        article_id, timestamp, signature = parser.google_parameters
+        article_id = article_id or urllib.parse.urlsplit(url).path.rstrip('/').rsplit('/', 1)[-1]
+        context = [["X", "X", ["X", "X"], None, None, 1, 1, "US:en", None,
+                    1, None, None, None, None, None, 0, 1],
+                   "X", "X", 1, [1, 1, 1], 1, 1, None, 0, 0, None, 0]
+        query = json.dumps(['garturlreq', context, article_id, int(timestamp), signature])
+        data = urllib.parse.urlencode({'f.req': json.dumps([[['Fbv4je', query]]])}).encode()
+        request = urllib.request.Request(
+            'https://news.google.com/_/DotsSplashUi/data/batchexecute?rpcids=Fbv4je',
+            data=data, headers={**RSS_HEADERS,
+                                'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'})
+        with self.opener.open(request, timeout=self.timeout) as response:
+            raw = response.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError('원문 연결 응답 크기 초과')
+        # Google frames JSON with an XSSI prefix, byte counts and blank lines.
+        for line in raw.decode('utf-8').splitlines():
+            if not line.startswith('[['):
+                continue
+            for frame in json.loads(line):
+                if not isinstance(frame, list) or frame[:2] != ['wrb.fr', 'Fbv4je']:
+                    continue
+                result = json.loads(frame[2])
+                if (isinstance(result, list) and len(result) >= 2 and result[0] == 'garturlres'
+                        and isinstance(result[1], str) and valid_link(result[1])
+                        and urllib.parse.urlsplit(result[1]).hostname != 'news.google.com'):
+                    return result[1]
+        return ''
+
     def create(self, row):
         note = '원문에서 기사 본문을 추출하지 못했습니다.'
         try:
-            try:
-                parser, url = self.read(row['url'])
-            except Exception:
-                if urllib.parse.urlsplit(row['url']).hostname != 'news.google.com':
-                    raise
-                target = self.publisher_link(row)
-                if not target:
-                    raise
-                parser, url = self.read(target)
-            if urllib.parse.urlsplit(url).hostname == 'news.google.com':
-                # Follow only explicit publisher links; never summarize Google's UI.
-                targets = parser.targets + [href for href, label in parser.links
-                                             if label == row['title']]
-                target = next((urllib.parse.urljoin(url, t) for t in targets
-                               if valid_link(urllib.parse.urljoin(url, t)) and
-                               urllib.parse.urlsplit(urllib.parse.urljoin(url, t)).hostname != 'news.google.com'), '')
-                if not target:
-                    target = self.publisher_link(row)
-                if not target:
-                    raise ValueError('원문 연결 주소 없음')
-                parser, url = self.read(target)
+            parser, url = self.read_article(row)
             body = parser.body()
             if len(body) >= 100:
                 text = summarize(body, row['title'])

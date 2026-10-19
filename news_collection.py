@@ -33,10 +33,14 @@ class CollectionReport:
 
 class NewsCollector:
     def __init__(self, workers=4, timeout=12, cache_size=128, fallback=False, google_request_interval=5,
-                 cycle_timeout=600):
+                 cycle_timeout=600, request_timeout=None):
         self.workers = max(1, min(workers, 4))
         self.timeout = timeout
         self.cycle_timeout = max(.1, cycle_timeout)
+        # A large catalog needs a long sweep, but one stuck socket must not
+        # consume that entire allowance (including DNS and trickling bodies).
+        self.request_timeout = (max(60, (timeout + google_request_interval) * self.workers + timeout)
+                                if request_timeout is None else max(.1, request_timeout))
         self.cache_size = cache_size
         self.cache = OrderedDict()
         self.lock = threading.Lock()
@@ -48,6 +52,7 @@ class NewsCollector:
         self.google_next_request = 0
         self.context = threading.local()
         self.failures = {'google': 0, 'bing': 0}
+        self.inflight = {'google': set(), 'bing': set()}
 
     def cooldown_remaining(self, provider='google'):
         with self.lock:
@@ -132,6 +137,8 @@ class NewsCollector:
                 self._cool_down(exc.headers, provider)
             exc.close()
             raise
+        if getattr(self.context, 'cancelled', lambda: False)():
+            raise ServerCoolingDown('뉴스 수집 취소')
         if len(data) > 4 * 1024 * 1024:
             raise ValueError('뉴스 응답 크기가 너무 큽니다.')
         articles = parse_feed(data)
@@ -192,6 +199,7 @@ class NewsCollector:
                 queries.setdefault(query, []).append(name)
         queue = iter(queries)
         pending = {}
+        submitted = {}
         count, finished = 0, 0
         executor = ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix='rss')
         was_cancelled = False
@@ -208,13 +216,22 @@ class NewsCollector:
         def fill():
             nonlocal count
             while len(pending) < self.workers and not stopped() and not self.cooldown_remaining(provider):
-                query = next(queue, None)
-                if query is None:
-                    break
-                # Failed conditions need no additional requests; shared users still do.
-                if all(name in failures for name in queries[query]):
-                    continue
-                pending[executor.submit(fetch_query, query)] = query
+                with self.lock:
+                    live = self.inflight[provider]
+                    live.difference_update([future for future in live if future.done()])
+                    # Timed-out DNS calls may still run. Keep a fixed number of
+                    # slots across cycles instead of leaking four threads each retry.
+                    if len(live) >= self.workers:
+                        break
+                    query = next(queue, None)
+                    if query is None:
+                        break
+                    if all(name in failures for name in queries[query]):
+                        continue
+                    future = executor.submit(fetch_query, query)
+                    live.add(future)
+                pending[future] = query
+                submitted[future] = time.monotonic()
                 count += 1
 
         try:
@@ -224,6 +241,10 @@ class NewsCollector:
                     was_cancelled = True
                     break
                 if time.monotonic() >= deadline:
+                    timed_out = True
+                    break
+                if any(not future.done() and time.monotonic() - submitted[future] >= self.request_timeout
+                       for future in pending):
                     timed_out = True
                     break
                 done, _ = wait(pending, timeout=.1, return_when=FIRST_COMPLETED)

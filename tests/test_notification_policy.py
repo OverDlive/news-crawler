@@ -125,13 +125,17 @@ class StoryDeliveryTests(unittest.TestCase):
         self.drain(self.kakao, calls)
         self.assertEqual(len(calls), 1)
 
-    def test_tracking_urls_are_duplicates_but_other_events_are_sent(self):
+    def test_tracking_urls_are_duplicates_and_distinct_events_remain_representative_candidates(self):
         self.kakao.enqueue([self.article,
             {**self.article, 'url': self.article['url'] + '?utm_source=rss#top', 'title': '제목 변경'},
             {**self.article, 'url': 'https://example.com/new', 'title': '한국전력 개인정보 2000명 유출 발생'}])
         calls = []
         self.drain(self.kakao, calls)
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 1)
+        with self.kakao.connect() as db:
+            rows = dict(db.execute('SELECT url,state FROM deliveries'))
+        self.assertEqual(rows[self.article['url'] + '?utm_source=rss#top'], 'skipped')
+        self.assertEqual(rows['https://example.com/new'], 'skipped')
 
     def test_low_importance_filtered_and_paid_broadcast_disabled(self):
         article = {**self.article, 'title': '지역 문화 행사 개최'}

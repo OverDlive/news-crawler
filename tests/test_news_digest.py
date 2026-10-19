@@ -1,24 +1,21 @@
-import json
-import io
 from pathlib import Path
 import tempfile
 import time
 import unittest
 from unittest.mock import patch
-from urllib.parse import parse_qs
 
-from kakao_notifications import Notifications, memo_template, send_memo
+from kakao_notifications import Notifications
 from telegram_notifications import TelegramNotifications, TelegramError
-from news_digest import institution, select_digest, telegram_text
+from news_digest import institution, select_representative
 
 
-def article(index, title, source='검증신문'):
-    return dict(url=f'https://example.com/{index}', title=title, source=source,
-                description='', discovered=time.time() + 1, published=time.time())
+def article(index, title, published=100):
+    return dict(url=f'https://example.com/{index}', title=title, source='검증신문',
+                description='', discovered=time.time() + 1, published=published)
 
 
 class InstitutionTests(unittest.TestCase):
-    def test_aliases_regulator_attribution_and_ambiguous_subjects(self):
+    def test_aliases_and_ambiguous_subjects(self):
         for title in ('OK저축은행 개인정보 유출', 'ok 저축은행 고객 안내',
                       '금감원, OK저축은행 개인정보 유출 조사'):
             self.assertEqual(institution({'title': title}), 'OK저축은행')
@@ -26,29 +23,25 @@ class InstitutionTests(unittest.TestCase):
         self.assertEqual(institution({'title': '피해 고객 안내',
                                      'keywords': ['OK저축은행 · 공격 유형']}), 'OK저축은행')
         self.assertEqual(institution({'title': 'OK저축은행·신한은행 공동 점검'}), '')
-        self.assertEqual(institution({'title': '기관이 없는 소식'}), '')
 
     def test_unknown_and_multi_institution_stories_stay_individual(self):
         for title in ('기관이 없는 개인정보 유출', 'OK저축은행·신한은행 개인정보 유출'):
-            items = [(str(i), article(i, title)) for i in range(2)]
-            batch, payload = select_digest(items, max_articles=3)
+            batch, payload = select_representative([(str(i), article(i, title)) for i in range(2)])
             self.assertEqual(len(batch), 1)
-            self.assertNotIn('digest_articles', payload)
+            self.assertNotIn('representative_count', payload)
 
-    def test_kakao_list_request_contains_each_original_article_link(self):
-        stories = [article(i, f'OK저축은행 고객 {1000+i}명 개인정보 유출') for i in range(3)]
-        _, payload = select_digest([(item['url'], item) for item in stories], max_articles=3)
-        with patch('kakao_notifications.urllib.request.urlopen',
-                   return_value=io.BytesIO(b'{"result_code":0}')) as request:
-            self.assertEqual(send_memo('test-token', payload)[0], 'sent')
-        fields = parse_qs(request.call_args.args[0].data.decode())
-        template = json.loads(fields['template_object'][0])
-        self.assertEqual(template['object_type'], 'list')
-        self.assertEqual([item['link']['web_url'] for item in template['contents']],
-                         [item['url'] for item in stories])
+    def test_highest_importance_wins_and_latest_publication_breaks_ties(self):
+        low = article('leak', 'OK저축은행 개인정보 유출', published=300)
+        older = article('old', 'OK저축은행 전산 서비스 장애 발생', published=100)
+        latest = article('new', 'OK저축은행 전산 서비스 장애 발생', published=200)
+        other = article('other', '신한은행 개인정보 유출')
+        batch, payload = select_representative([(a['url'], a) for a in [low, older, other, latest]])
+        self.assertEqual(payload['url'], latest['url'])
+        self.assertEqual(len(batch), 3)
+        self.assertNotIn(other['url'], [key for key, _ in batch])
 
 
-class DigestDeliveryTests(unittest.TestCase):
+class RepresentativeDeliveryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -82,67 +75,65 @@ class DigestDeliveryTests(unittest.TestCase):
         with service.connect() as db:
             return dict(db.execute('SELECT url,state FROM deliveries'))
 
-    def test_institution_roundup_keeps_different_events_and_separate_delivery_records(self):
+    def test_only_highest_is_sent_and_other_institutions_remain_independent(self):
         other = article('other', '신한은행 고객 400명 개인정보 유출')
         low = article('promo', 'OK저축은행 보안 교육 개최')
-        duplicate = {**self.stories[0], 'url': 'https://another.com/leak'}
         for service in (self.kakao, self.telegram):
             with self.subTest(channel=type(service).__name__):
-                service.enqueue([*self.stories, other, low, duplicate])
+                service.enqueue([*self.stories, other, low])
                 calls = []
                 self.drain(service, calls)
                 if service is self.telegram:
-                    self.assertEqual(len(calls), 1)
                     self.drain(service, calls)
-                self.assertEqual(len(calls), 2)
-                if service is self.kakao:
-                    payload = calls[0]
-                    self.assertEqual(payload['institution'], 'OK저축은행')
-                    self.assertEqual(len(payload['digest_articles']), 3)
-                    template = memo_template(payload)
-                    self.assertEqual(template['object_type'], 'list')
-                    self.assertEqual({item['link']['web_url'] for item in template['contents']},
-                                     {item['url'] for item in self.stories})
+                    self.assertEqual(calls[0]['link_preview_options'], {
+                        'is_disabled': False, 'url': self.stories[2]['url'], 'prefer_large_media': True})
+                    self.assertIn(self.stories[2]['title'], calls[0]['text'])
+                    self.assertNotIn(self.stories[0]['url'], calls[0]['text'])
                 else:
-                    text = calls[0]['text']
-                    self.assertIn('[OK저축은행] 주요 뉴스 3건', text)
-                    for item in self.stories:
-                        self.assertIn(item['title'], text)
-                        self.assertIn(item['url'], text)
-                    self.assertLess(text.index('장애 발생'), text.index('과징금'))
-                    self.assertIs(calls[0]['allow_paid_broadcast'], False)
-                    self.assertNotIn(other['url'], text)
+                    self.assertEqual(calls[0]['url'], self.stories[2]['url'])
+                    self.assertNotIn('digest_articles', calls[0])
+                self.assertEqual(len(calls), 2)
                 states = self.states(service)
-                self.assertTrue(all(states[item['url']] == 'sent' for item in [*self.stories, other]))
-                self.assertEqual(states[duplicate['url']], 'skipped')
+                self.assertEqual(states[self.stories[2]['url']], 'sent')
+                self.assertTrue(all(states[a['url']] == 'skipped' for a in self.stories[:2]))
+                self.assertEqual(states[other['url']], 'sent')
                 self.assertEqual(states[low['url']], 'filtered')
-                with service.connect() as db:
-                    raw, detail = db.execute('SELECT article,detail FROM deliveries WHERE url=?',
-                                             (self.stories[0]['url'],)).fetchone()
-                    self.assertNotIn('digest_articles', json.loads(raw))
-                    self.assertIn('기관 묶음 3건', detail)
 
-    def test_unknown_batch_is_not_automatically_retried_after_restart(self):
+    def test_success_suppression_survives_restart_and_future_news_can_send(self):
+        for service, cls in ((self.kakao, Notifications), (self.telegram, TelegramNotifications)):
+            service.enqueue(self.stories)
+            calls = []
+            self.drain(service, calls)
+            restarted = cls(self.path)
+            self.enable(restarted)
+            restarted.enqueue(self.stories)
+            restarted.enqueue([{**a, 'url': a['url'] + '?utm_source=rss'} for a in self.stories])
+            self.drain(restarted, calls)
+            self.assertEqual(len(calls), 1)
+            new = article('new', 'OK저축은행 고객 9000명 개인정보 유출', published=200)
+            restarted.enqueue([new])
+            self.drain(restarted, calls)
+            self.assertEqual(len(calls), 2)
+
+    def test_unknown_is_not_automatically_retried_after_restart(self):
         for service, cls in ((self.kakao, Notifications), (self.telegram, TelegramNotifications)):
             service.enqueue(self.stories)
             calls = []
             self.drain(service, calls, state='unknown')
-            self.assertEqual(len(calls), 1)
             self.assertEqual(set(self.states(service).values()), {'unknown'})
             restarted = cls(self.path)
             self.enable(restarted)
-            restarted.enqueue([{**item, 'url': item['url'] + '?utm_source=rss'} for item in self.stories])
+            restarted.enqueue(self.stories)
             self.drain(restarted, calls)
             self.assertEqual(len(calls), 1)
 
-    def test_telegram_rate_limit_and_explicit_failure_apply_to_every_batch_member(self):
+    def test_rate_limit_preserves_candidates_and_explicit_retry_selects_one(self):
         self.telegram.enqueue(self.stories)
         with patch('telegram_notifications.protect', return_value='token'):
             def limited(*args):
                 raise TelegramError(429, 120)
             self.assertEqual(self.telegram.deliver(request=limited)[0], 'pending')
         self.assertEqual(set(self.states(self.telegram).values()), {'pending'})
-        self.assertGreater(self.telegram.settings()['next_send'], time.time() + 110)
         self.telegram.deliver(request=lambda *args: self.fail('must respect retry delay'))
         self.enable(self.telegram)
         def failed(*args):
@@ -155,59 +146,29 @@ class DigestDeliveryTests(unittest.TestCase):
         calls = []
         self.drain(self.telegram, calls)
         self.assertEqual(len(calls), 1)
-        self.assertEqual(set(self.states(self.telegram).values()), {'sent'})
+        self.assertEqual(list(self.states(self.telegram).values()).count('sent'), 1)
 
-    def test_kakao_claims_all_items_atomically_and_caps_lists_at_three(self):
+    def test_kakao_claims_all_candidates_before_sending_and_has_no_three_item_cap(self):
         stories = [article(i, f'OK저축은행 고객 {1000+i}명 개인정보 유출') for i in range(5)]
         self.kakao.enqueue(stories)
         calls = []
         def sender(token, payload):
-            items = payload['digest_articles']
-            states = self.states(self.kakao)
-            self.assertTrue(all(states[item['url']] == 'sending' for item in items))
+            self.assertEqual(set(self.states(self.kakao).values()), {'sending'})
             calls.append(payload)
             return 'sent', '결과'
         self.kakao.deliver(sender=sender)
-        self.assertEqual([len(item['digest_articles']) for item in calls], [3, 2])
-        self.assertEqual(set(self.states(self.kakao).values()), {'sent'})
-
-    def test_kakao_explicit_retry_resends_the_failed_roundup_once(self):
-        self.kakao.enqueue(self.stories)
-        calls = []
-        self.drain(self.kakao, calls, state='failed')
         self.assertEqual(len(calls), 1)
-        self.assertEqual(set(self.states(self.kakao).values()), {'failed'})
-        self.enable(self.kakao)
-        self.drain(self.kakao, calls)
-        self.assertEqual(len(calls), 1)
-        self.kakao.retry(1)
-        self.drain(self.kakao, calls)
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(len(calls[-1]['digest_articles']), 3)
-        self.assertEqual(set(self.states(self.kakao).values()), {'sent'})
+        self.assertEqual(list(self.states(self.kakao).values()).count('skipped'), 4)
 
-    def test_telegram_splits_long_messages_without_losing_links_or_marking_unsent_articles_sent(self):
-        stories = [{**article(i, f'OK저축은행 고객 {1000+i}명 개인정보 유출'),
-                    'url': 'https://example.com/' + 'x' * 1400 + str(i)} for i in range(4)]
-        self.telegram.enqueue(stories)
-        calls = []
-        self.drain(self.telegram, calls)
-        self.assertEqual(list(self.states(self.telegram).values()).count('sent'), 2)
-        self.assertEqual(list(self.states(self.telegram).values()).count('pending'), 2)
-        self.drain(self.telegram, calls)
-        self.assertEqual(len(calls), 2)
-        for fields in calls:
-            self.assertLessEqual(len(fields['text'].encode('utf-16-le')) // 2, 4096)
-        text = '\n'.join(fields['text'] for fields in calls)
-        for item in stories:
-            self.assertIn(item['url'], text)
-        self.assertEqual(set(self.states(self.telegram).values()), {'sent'})
-
-    def test_same_institution_news_is_not_combined_across_recipients(self):
+    def test_kakao_failure_preserves_explicit_retry_and_recipient_isolation(self):
         self.kakao.save_user('둘째', 'second-token')
         self.kakao.enqueue(self.stories)
         calls = []
-        self.kakao.deliver(sender=lambda token, payload: (calls.append((token, payload)) or ('sent', 'OK')))
+        self.kakao.deliver(sender=lambda token, payload: (calls.append((token, payload)) or ('failed', '실패')))
         self.assertEqual(len(calls), 2)
-        self.assertEqual({token for token, _ in calls}, {'test-token', 'second-token'})
-        self.assertTrue(all(len(payload['digest_articles']) == 3 for _, payload in calls))
+        self.assertEqual(set(self.states(self.kakao).values()), {'failed'})
+        self.kakao.retry(1)
+        self.kakao.set_enabled(1, True)
+        self.drain(self.kakao, calls)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[-1]['url'], self.stories[2]['url'])

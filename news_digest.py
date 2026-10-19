@@ -1,5 +1,6 @@
-"""Institution roundups for sharing; individual story records remain separate."""
+"""Select one important representative per institution's pending news."""
 from news_dedup import _COMPANY, normalize
+from news_importance import share_priority
 from security_profiles import INSTITUTIONS
 
 
@@ -31,41 +32,38 @@ def clipped(value, units):
 
 def telegram_text(article):
     # Plain text avoids markup injection and keeps each original article link.
-    items = article.get('digest_articles')
-    if items:
-        header = f"[{clipped(article['institution'], 100)}] 주요 뉴스 {len(items)}건"
-        return header + '\n\n' + '\n\n'.join(
-            f"{index}. {clipped(item['title'], 220)}\n"
-            f"{clipped(item.get('source', ''), 80)}\n{item['url']}"
-            for index, item in enumerate(items, 1))
     return (clipped(article.get('title', ''), 500) + '\n' +
             clipped(article.get('source', ''), 100) + '\n\n' +
             clipped(article.get('description', ''), 600) + '\n\n' +
-            clipped(article['url'], 1500))
+            clipped(article.get('content_url') or article['url'], 1500))
 
 
-def select_digest(pending, *, max_articles, fits=lambda article: True):
-    """Select one priority-ordered institution batch, returning exact claimed rows."""
-    first_key, first = pending[0]
+def select_representative(pending):
+    """Claim all pending peers so later delivery cycles cannot send the runners-up.
+
+    Higher importance wins; the latest publication breaks ties. Unknown or
+    ambiguous institutions stay individual. Future arrivals remain eligible.
+    """
+    ranked = sorted(pending, key=lambda item: (share_priority(item[1])[0],
+                    item[1].get('published', 0)), reverse=True)
+    first_key, first = ranked[0]
     name = institution(first)
-    selected = [(first_key, first)]
     if not name:
-        return selected, first
-    outbound = first
-    for key, article in pending[1:]:
-        if len(selected) >= max_articles:
-            break
-        if institution(article) != name:
-            continue
-        proposed = [*selected, (key, article)]
-        digest = {**first, 'institution': name,
-                  'digest_articles': [item for _, item in proposed]}
-        if fits(digest):
-            selected, outbound = proposed, digest
-    return selected, outbound
+        return [(first_key, first)], first
+    selected = [(key, article) for key, article in ranked if institution(article) == name]
+    return selected, {**first, 'institution': name, 'representative_count': len(selected)}
 
 
 def delivery_detail(article, detail):
-    if article.get('digest_articles'):
-        return f"{article['institution']} 기관 묶음 {len(article['digest_articles'])}건 · {detail}"
+    if article.get('representative_count'):
+        return f"{article['institution']} 대표 기사 1건 (후보 {article['representative_count']}건) · {detail}"
     return detail
+
+
+def delivery_results(batch, article, state, detail, owner):
+    """Only the representative was sent; retain retry/uncertainty for all claims."""
+    for key, _ in batch:
+        excluded = state == 'sent' and len(batch) > 1 and key != article['url']
+        yield ('skipped' if excluded else state,
+               '기관 대표 기사 발송으로 공유 제외 · ' + detail if excluded else detail,
+               owner, key)

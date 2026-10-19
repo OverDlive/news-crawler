@@ -642,6 +642,28 @@ class GuiTests(unittest.TestCase):
             fetch.assert_called_once()
         self.app.demo = True
 
+    def test_resume_restarts_busy_collection_and_ignores_old_completion(self):
+        self.app.demo = False
+        self.app.telegram_next = self.app.kakao_next = float('inf')
+        self.app.busy = True
+        revision = self.app.revision
+        self.app.last_tick_wall = time.time() - 8 * 3600
+        def fetch():
+            self.app.busy = True
+        try:
+            with patch.object(self.app, 'start_summaries'), \
+                    patch.object(self.app, 'start_fetch', side_effect=fetch) as start:
+                self.app.tick()
+                start.assert_called_once()
+            self.assertEqual(self.app.revision, revision + 1)
+            self.app.next_fetch = 12345
+            self.app.events.put(('done', revision, [], [('old', 'timeout')]))
+            self.app.process_events()
+            self.assertTrue(self.app.busy)
+            self.assertEqual(self.app.next_fetch, 12345)
+        finally:
+            self.app.demo = True
+
     def test_failed_cycle_retries_automatically_and_respects_server_cooldown(self):
         self.app.demo = False
         self.app.kakao_next = float('inf')

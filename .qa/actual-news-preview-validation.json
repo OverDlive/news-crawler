@@ -1,0 +1,29 @@
+[
+  {
+    "title": "가주 학생 700만 명 정보 해킹…교육부 계약 기관 ETS 해킹",
+    "source": "미주중앙일보",
+    "article_url": "https://www.koreadaily.com/article/20261018132425729",
+    "image_url": "https://www.koreadaily.com/resources/usa/thumbnail_image/2026/10/19/ee6ecfa7-60a4-4670-98ac-b30e4c1b1943.jpg",
+    "image_type": "image/jpeg",
+    "kakao_template": "feed",
+    "telegram_preview_url": "https://www.koreadaily.com/article/20261018132425729"
+  },
+  {
+    "title": "과기정통부 보안 관리 허점, 랜섬웨어 취약점 대처 미흡 논란",
+    "source": "공감신문",
+    "article_url": "https://www.gokorea.kr/news/articleView.html?idxno=881868",
+    "image_url": "https://cdn.gokorea.kr/news/thumbnail/202610/881868_159287_2438_v150.jpg",
+    "image_type": "image/jpeg",
+    "kakao_template": "feed",
+    "telegram_preview_url": "https://www.gokorea.kr/news/articleView.html?idxno=881868"
+  },
+  {
+    "title": "“AI 악용 해킹 위협 ↑”… 개인정보위, 국민·기업이 지켜야 할 보호수칙 공개",
+    "source": "보안뉴스",
+    "article_url": "https://www.boannews.com/news/articleView.html?idxno=146489",
+    "image_url": "https://cdn.boannews.com/news/photo/202610/146489_128981_1814.jpg",
+    "image_type": "image/jpeg",
+    "kakao_template": "feed",
+    "telegram_preview_url": "https://www.boannews.com/news/articleView.html?idxno=146489"
+  }
+]

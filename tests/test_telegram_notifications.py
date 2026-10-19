@@ -15,6 +15,10 @@ TOKEN = '123456:' + 'a' * 30
 
 class TelegramTests(unittest.TestCase):
     def setUp(self):
+        preview = patch('telegram_notifications.telegram_preview_url',
+                        side_effect=lambda article: article.get('content_url') or article['url'])
+        preview.start()
+        self.addCleanup(preview.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)

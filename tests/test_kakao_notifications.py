@@ -206,6 +206,9 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(migrated.refresh_status(1), (False, 0, ''))
 
     def setUp(self):
+        preview = patch('kakao_notifications.article_preview', side_effect=lambda article: article)
+        preview.start()
+        self.addCleanup(preview.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.queue = Notifications(Path(self.temp.name))

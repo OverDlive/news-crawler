@@ -13,7 +13,9 @@ _AUTHORITIES = frozenset(normalize(name) for name in
                          ('금융감독원', '금융위원회', '개인정보보호위원회', '경찰청', '검찰청'))
 
 
-@lru_cache(maxsize=4096)
+# Bodies can be 60,000 characters, and each shingle set contains thousands
+# of Python strings. Bound the working set; durable pair scores live in SQLite.
+@lru_cache(maxsize=128)
 def clean_body(text):
     # Some publishers include recommendation lists inside their article container.
     # Their dates, victim counts and unrelated companies must not become evidence.
@@ -65,12 +67,11 @@ def eligible(left, right):
     return True
 
 
-@lru_cache(maxsize=4096)
+@lru_cache(maxsize=128)
 def _shingles(text):
     return frozenset(text[i:i + 3] for i in range(len(text) - 2))
 
 
-@lru_cache(maxsize=8192)
 def body_score(left, right):
     import numpy as np
     from sklearn.feature_extraction.text import TfidfVectorizer

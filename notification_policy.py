@@ -79,10 +79,12 @@ def prepare_queue(db, owner_column, owner):
     Sent/ambiguous claims remain anchors across restarts. Failed sends are not
     anchors; explicit retries remain possible. Test messages bypass news policy.
     """
-    rows = db.execute(f'SELECT url,article,state FROM deliveries WHERE {owner_column}=? ORDER BY rowid',
+    rows = db.execute(f'SELECT url,article,state,detail FROM deliveries WHERE {owner_column}=? ORDER BY rowid',
                       (owner,)).fetchall()
     anchors = [json.loads(row[1]) for row in rows
-               if row[2] in ('sent', 'sending', 'unknown') and not row[0].startswith('test:')]
+               if (row[2] in ('sent', 'sending', 'unknown') or
+                   row[2] == 'skipped' and row[3].startswith('기관 대표 기사 발송으로 공유 제외'))
+               and not row[0].startswith('test:')]
     pending = [(row[0], json.loads(row[1])) for row in rows
                if row[2] in ('pending', 'filtered') and not row[0].startswith('test:')]
     pending.sort(key=lambda item: share_priority(item[1])[0], reverse=True)

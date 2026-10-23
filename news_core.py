@@ -14,6 +14,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from search_rules import SearchRule
 from news_dedup import deduplicate
+from notification_schedule import default_schedule, normalize_schedule
 
 DEFAULTS = {
     "keywords": [], "interval_minutes": 10, "hours": 24,
@@ -213,7 +214,7 @@ class Store:
         """)
 
     def load_config(self):
-        config = {**DEFAULTS, "keywords": []}
+        config = {**DEFAULTS, "keywords": [], "sharing_schedule": default_schedule()}
         if not self.config_path.exists():
             return config
         try:
@@ -232,6 +233,7 @@ class Store:
             config["auto_rotate"] = value.get("auto_rotate", True)
             theme = value.get("theme", "system")
             config["theme"] = theme if theme in ("system", "light", "dark") else "system"
+            config['sharing_schedule'] = normalize_schedule(value.get('sharing_schedule'))
             for version_key in ('institution_catalog_version', 'financial_catalog_version'):
                 catalog_version = value.get(version_key)
                 if type(catalog_version) is int and catalog_version >= 0:
@@ -255,7 +257,7 @@ class Store:
             backup = self.directory / f"settings.invalid-{time.time_ns()}.json"
             self.config_path.replace(backup)
             self.warning = f"설정을 읽지 못해 초기화했습니다. 원본 보관: {backup.name}"
-            return {**DEFAULTS, "keywords": []}
+            return {**DEFAULTS, "keywords": [], "sharing_schedule": default_schedule()}
 
     def save_config(self, config):
         temporary = self.config_path.with_suffix(".tmp")

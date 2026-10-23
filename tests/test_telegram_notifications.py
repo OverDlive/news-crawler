@@ -15,6 +15,9 @@ TOKEN = '123456:' + 'a' * 30
 
 class TelegramTests(unittest.TestCase):
     def setUp(self):
+        schedule = patch('telegram_notifications.load_schedule', return_value={'enabled': False})
+        schedule.start()
+        self.addCleanup(schedule.stop)
         preview = patch('telegram_notifications.telegram_preview_url',
                         side_effect=lambda article: article.get('content_url') or article['url'])
         preview.start()

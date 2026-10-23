@@ -30,6 +30,8 @@ from app_updates import app_directory, apply_pending, UpdateChecker
 from version import VERSION
 from search_rules import RuleError, SearchRule
 from group_editor import build_group_editor
+from notification_schedule import schedule_status
+from sharing_editor import build_sharing_editor
 from security_profiles import (register_initial_institutions, register_financial_institutions,
                                financial_keyword_names, FINANCIAL_FILTER)
 from ui_theme import GAP, PADDING, PALETTES, THEME_LABELS, RoundedPanel, ThemedButton, TextHint, resolve_theme
@@ -322,8 +324,11 @@ class NewsMonitor:
         self.filter = self.combobox(toolbar, textvariable=self.filter_var, state="readonly", width=17, font=(FONT, 11))
         self.filter.grid(row=0, column=1, sticky='ew', padx=(0, 16))
         self.filter.bind("<<ComboboxSelected>>", lambda e: self.select_filter())
-        self.count_label = self.label(toolbar, "", 10, c["muted"])
-        self.count_label.grid(row=1, column=0, sticky='w', pady=(10, 0))
+        period = tk.Frame(toolbar, bg=c["panel"])
+        period.grid(row=1, column=0, sticky='w', pady=(10, 0))
+        self.count_label = self.label(period, "", 10, c["muted"])
+        self.count_label.pack(side='left')
+        self.button(period, "수집 기간", lambda: self.settings(monitoring=True)).pack(side='left', padx=(10, 0))
         self.apply_button = self.button(toolbar, "새 결과 보기", self.apply_results)
         self.apply_button.grid(row=1, column=2, sticky='e', pady=(10, 0))
         self.apply_button.configure(state="disabled")
@@ -905,6 +910,8 @@ class NewsMonitor:
             pending += ' · 기사 본문 확인·요약 중'
         if self.grouping_busy:
             pending += ' · 유사 기사 비교 중'
+        if not self.demo:
+            waiting += '  ·  ' + schedule_status(self.config['sharing_schedule'], wall)
         text = f"{self.last_status}{pending}\n마지막 수집 성공 {timestamp(success)}  ·  {waiting}"
         self.status_label.configure(text=text, fg=self.colors["warning"] if self.collection_errors else self.colors["muted"],
                                     wraplength=max(500, self.root.winfo_width() - 340))
@@ -1031,8 +1038,12 @@ class NewsMonitor:
             except webbrowser.Error as exc:
                 messagebox.showerror("브라우저", str(exc), parent=self.root)
 
-    def settings(self):
+    def settings(self, *, monitoring=False, sharing=False):
         if self.settings_window is not None:
+            if sharing:
+                self.settings_notebook.select(self.sharing_tab)
+            elif monitoring:
+                self.settings_notebook.select(self.monitoring_tab)
             self.settings_window.lift()
             return
         win = tk.Toplevel(self.root)
@@ -1068,6 +1079,11 @@ class NewsMonitor:
 
         box, rule_canvas = scroll_tab("키워드 / 검색 조건")
         monitor, monitor_canvas = scroll_tab("모니터링 설정")
+        sharing_box, sharing_canvas = scroll_tab('공유 시간')
+        self.sharing_tab = sharing_canvas.master
+        sharing_draft = build_sharing_editor(self, sharing_box)
+        self.settings_notebook = notebook
+        self.monitoring_tab = monitor_canvas.master
         group_box, group_canvas = scroll_tab("기관 등록")
         # Fill the viewport while allowing a minimum usable table height.
         # The longer company-edit form retains the outer canvas scrollbar.
@@ -1087,7 +1103,7 @@ class NewsMonitor:
         update_box, update_canvas = scroll_tab("프로그램 / 업데이트")
         notebook.insert(0, group_canvas.master)
         def wheel(event):
-            canvas = next(c for c in (rule_canvas, monitor_canvas, group_canvas, update_canvas) if str(c.master) == notebook.select())
+            canvas = next(c for c in (rule_canvas, monitor_canvas, sharing_canvas, group_canvas, update_canvas) if str(c.master) == notebook.select())
             if canvas.bbox("all") and canvas.bbox("all")[3] > canvas.winfo_height():
                 canvas.yview_scroll(-int(event.delta / 120), "units")
         win.bind("<MouseWheel>", wheel, add="+")
@@ -1282,15 +1298,18 @@ class NewsMonitor:
         fields.pack(fill="x")
         variables = {}
         for index, (key, title, low, high) in enumerate((
-            ("interval_minutes", "검색 간격 (분)", 10, 60), ("hours", "기사 조회 기간 (시간)", 1, 168),
+            ("hours", "기사 수집 기간 (시간)", 1, 168), ("interval_minutes", "검색 간격 (분)", 10, 60),
             ("page_seconds", "페이지 전환 (초)", 5, 300), ("page_size", "화면당 기사 수", 3, 8),
             ("new_minutes", "NEW 표시 (분)", 1, 60),
         )):
             variable = tk.StringVar(value=str(self.config[key]))
             variables[key] = (variable, low, high, title)
             self.label(fields, title, 11, self.colors["muted"]).grid(row=index, column=0, sticky="w", pady=5)
-            ttk.Spinbox(fields, from_=low, to=high, textvariable=variable, width=8,
+            ttk.Spinbox(fields, name=key, from_=low, to=high, textvariable=variable, width=8,
                         font=(FONT, 11), style="Monitor.TSpinbox").grid(row=index, column=1, padx=18)
+        self.label(monitor, "현재 시각 기준 최근 1~168시간(최대 7일)의 기사를 수집하고 표시합니다.\n"
+                   "예: 6 = 최근 6시간, 48 = 최근 2일 · 저장하고 적용하면 변경한 기간으로 다시 수집합니다.",
+                   10, self.colors["muted"], justify='left', wraplength=580).pack(anchor="w", pady=(10, 0))
         self.label(monitor, "F11 전체 화면 · Esc 해제 · ← → 페이지 이동", 10, self.colors["muted"]).pack(anchor="w", pady=20)
 
         self.label(update_box, "프로그램 버전 및 자동 업데이트", 20).pack(anchor="w", pady=(0, 18))
@@ -1340,6 +1359,12 @@ class NewsMonitor:
             win.destroy()
 
         def save():
+            try:
+                schedule = sharing_draft()
+            except ValueError as exc:
+                notebook.select(self.sharing_tab)
+                messagebox.showwarning('공유 시간', str(exc), parent=win)
+                return
             index = editing[0]
             if index is not None:
                 if form_entry(draft[index]["enabled"]) != draft[index] and not edit():
@@ -1350,6 +1375,7 @@ class NewsMonitor:
             if not flush_groups():
                 return
             updated = {**self.config, "keywords": draft,
+                       "sharing_schedule": schedule,
                        "theme": next(key for key, label in THEME_LABELS.items() if label == self.theme_var.get())}
             for key, (variable, low, high, title) in variables.items():
                 try:
@@ -1377,6 +1403,7 @@ class NewsMonitor:
             self.page = 0
             self.reload(force=True)
             self.next_fetch = time.monotonic()
+            self.telegram_next = self.kakao_next = 0
             close()
             self.apply_theme()
 
@@ -1386,7 +1413,7 @@ class NewsMonitor:
         win.bind("<Escape>", lambda e: close())
         draw()
         preview_condition()
-        notebook.select(group_canvas.master)
+        notebook.select(self.sharing_tab if sharing else monitor_canvas.master if monitoring else group_canvas.master)
 
     def toggle_fullscreen(self):
         self.fullscreen = not self.fullscreen

@@ -16,6 +16,83 @@ from ui_theme import GAP, RADIUS, RoundedPanel
 
 
 class GuiTests(unittest.TestCase):
+    def sharing_widgets(self):
+        def descendants(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from descendants(child)
+        return {widget.winfo_name() if widget.winfo_name().startswith('sharing_') else str(widget): widget
+                for widget in descendants(self.app.settings_window)}
+
+    def test_sharing_schedule_preview_validation_save_and_cancel(self):
+        self.app.settings(sharing=True)
+        self.root.update()
+        widgets = self.sharing_widgets()
+        self.assertEqual(self.app.settings_notebook.select(), str(self.app.sharing_tab))
+        self.assertIn('09:00부터', widgets['sharing_preview'].cget('text'))
+        widgets['sharing_start_hour'].set('22')
+        widgets['sharing_end_minute'].set('30')
+        self.assertIn('다음 날 09:30', widgets['sharing_preview'].cget('text'))
+        save = next(w for w in widgets.values() if isinstance(w, ThemedButton) and w.cget('text') == '저장하고 적용')
+        save.invoke()
+        self.assertEqual(self.app.store.load_config()['sharing_schedule'],
+                         {'enabled': True, 'start': '22:00', 'end': '09:30'})
+        self.app.settings(sharing=True)
+        widgets = self.sharing_widgets()
+        widgets['sharing_start_hour'].set('09')
+        widgets['sharing_start_minute'].set('30')
+        save = next(w for w in widgets.values() if isinstance(w, ThemedButton) and w.cget('text') == '저장하고 적용')
+        with patch('app.messagebox.showwarning') as warning:
+            save.invoke()
+        warning.assert_called_once()
+        self.assertIsNotNone(self.app.settings_window)
+        self.root.tk.call(self.app.settings_window.protocol('WM_DELETE_WINDOW'))
+        self.assertEqual(self.app.store.load_config()['sharing_schedule']['start'], '22:00')
+
+    def test_sharing_toggle_disables_time_fields_and_persists(self):
+        self.app.settings(sharing=True)
+        self.root.update()
+        widgets = self.sharing_widgets()
+        widgets['sharing_enabled'].invoke()
+        self.assertEqual(str(widgets['sharing_start_hour'].cget('state')), 'disabled')
+        self.assertIn('시간 제한 없이', widgets['sharing_preview'].cget('text'))
+        next(w for w in widgets.values() if isinstance(w, ThemedButton) and w.cget('text') == '저장하고 적용').invoke()
+        self.assertFalse(self.app.store.load_config()['sharing_schedule']['enabled'])
+
+    def test_sharing_settings_fit_small_window_and_allow_scrolling(self):
+        self.app.settings(sharing=True)
+        self.app.settings_window.geometry('700x500')
+        self.root.update()
+        widgets = self.sharing_widgets()
+        preview = widgets['sharing_preview']
+        self.assertLessEqual(int(preview.cget('wraplength')), preview.master.winfo_width())
+        for name in ('sharing_start_hour', 'sharing_start_minute', 'sharing_end_hour', 'sharing_end_minute'):
+            field = widgets[name]
+            self.assertGreater(field.winfo_width(), 30)
+            self.assertLessEqual(field.winfo_rootx() + field.winfo_width(),
+                                 self.app.settings_window.winfo_rootx() + self.app.settings_window.winfo_width())
+        canvas = next(w for w in self.app.sharing_tab.winfo_children() if isinstance(w, tk.Canvas))
+        self.assertGreater(canvas.bbox('all')[3], canvas.winfo_height())
+        canvas.yview_moveto(1)
+        self.root.update()
+        self.assertAlmostEqual(canvas.yview()[1], 1)
+
+    def test_both_channel_editors_link_to_shared_schedule(self):
+        for open_editor, attribute in ((self.app.kakao_settings, 'kakao_window'),
+                                       (self.app.telegram_settings, 'telegram_window')):
+            open_editor()
+            self.root.update()
+            window = getattr(self.app, attribute)
+            def descendants(widget):
+                for child in widget.winfo_children():
+                    yield child
+                    yield from descendants(child)
+            button = next(w for w in descendants(window) if isinstance(w, ThemedButton) and w.cget('text') == '공유 시간 설정')
+            button.invoke()
+            self.assertEqual(self.app.settings_notebook.select(), str(self.app.sharing_tab))
+            self.root.tk.call(self.app.settings_window.protocol('WM_DELETE_WINDOW'))
+            self.root.tk.call(window.protocol('WM_DELETE_WINDOW'))
+
     def test_all_editor_and_preview_windows_receive_shared_icon(self):
         calls = []
         original = tk.Toplevel.iconphoto
@@ -289,9 +366,9 @@ class GuiTests(unittest.TestCase):
                 yield child
                 yield from descendants(child)
         buttons = [w for w in descendants(win) if isinstance(w, ThemedButton)]
-        self.assertEqual(len(buttons), 7)
+        self.assertEqual(len(buttons), 8)
         for button in buttons:
-            if button.cget('text') != '닫기':
+            if button.cget('text') not in ('닫기', '공유 시간 설정'):
                 self.assertEqual(button.cget('state'), 'disabled')
         self.app.telegram_settings()
         self.assertIs(self.app.telegram_window, win)

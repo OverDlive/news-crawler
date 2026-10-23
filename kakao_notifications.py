@@ -15,6 +15,7 @@ from notification_policy import initialize_cutoffs, prepare_queue, remember_arti
 from news_importance import share_priority
 from news_digest import select_representative, delivery_detail, delivery_results
 from news_preview import article_preview
+from notification_schedule import hold_until, load_schedule
 
 
 def protect(value, decrypt=False):
@@ -322,6 +323,8 @@ class Notifications:
         for _ in range(20):
             if stopped():
                 break
+            if hold_until(load_schedule(self.path.parent)):
+                break
             with self.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 for (user,) in db.execute('SELECT id FROM recipients WHERE enabled=1').fetchall():
@@ -337,6 +340,8 @@ class Notifications:
                 pending = sorted(((item[1], json.loads(item[2])) for item in candidates if item[0] == row[0]),
                                  key=lambda item: share_priority(item[1])[0], reverse=True)
                 batch, article = select_representative(pending)
+                if hold_until(load_schedule(self.path.parent)):
+                    break
                 db.executemany("UPDATE deliveries SET state='sending' WHERE recipient=? AND url=?",
                                [(row[0], key) for key, _ in batch])
             try:

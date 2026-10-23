@@ -11,6 +11,10 @@ from telegram_notifications import TelegramNotifications
 
 class StoryDeliveryTests(unittest.TestCase):
     def setUp(self):
+        for module in ('kakao_notifications', 'telegram_notifications'):
+            schedule = patch(module + '.load_schedule', return_value={'enabled': False})
+            schedule.start()
+            self.addCleanup(schedule.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)

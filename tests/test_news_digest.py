@@ -43,6 +43,10 @@ class InstitutionTests(unittest.TestCase):
 
 class RepresentativeDeliveryTests(unittest.TestCase):
     def setUp(self):
+        for module in ('kakao_notifications', 'telegram_notifications'):
+            schedule = patch(module + '.load_schedule', return_value={'enabled': False})
+            schedule.start()
+            self.addCleanup(schedule.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name)

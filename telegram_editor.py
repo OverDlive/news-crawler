@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from telegram_notifications import TelegramError
+from notification_schedule import schedule_status
 
 
 def open_telegram_editor(app):
@@ -22,6 +23,7 @@ def open_telegram_editor(app):
     card, body = app.surface(win, padding=24)
     card.pack(fill='both', expand=True, padx=20, pady=20)
     app.label(body, '텔레그램 자동 공유', 20).pack(anchor='w')
+    app.button(body, '공유 시간 설정', lambda: app.settings(sharing=True)).pack(anchor='e', pady=(4, 6))
     instructions = ('1. BotFather에서 만든 봇을 단체방에 초대하세요. 채널은 게시 권한을 주세요.\n'
                     '2. 토큰 입력 후 방 찾기를 누르세요. 방이 없으면 단체방에서 /start@봇이름을\n'
                     '   보내거나 채널에 새 게시물을 올린 뒤 다시 방 찾기를 누르세요.\n'
@@ -146,7 +148,8 @@ def open_telegram_editor(app):
                 listing.selection_set(str(rooms[0]['id']))
         target = next((r['title'] for r in rooms if r['id'] == config['chat_id']), '미선택')
         status.configure(text=('데모 · 발송 중지' if app.demo else '자동 공유 ' + ('ON' if config['enabled'] else 'OFF')) +
-            f" · 봇 @{config['username'] or '미등록'} · 대상 {target}\n" + config['detail'])
+            f" · 봇 @{config['username'] or '미등록'} · 대상 {target}\n" +
+            schedule_status(app.config['sharing_schedule']) + '\n' + config['detail'])
         for button in buttons:
             button.configure(state='disabled' if busy[0] or app.demo else 'normal')
         if not config['enabled']:

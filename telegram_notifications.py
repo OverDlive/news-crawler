@@ -13,6 +13,7 @@ from kakao_notifications import protect
 from notification_policy import initialize_cutoffs, prepare_queue, remember_article, reset_queue
 from news_digest import select_representative, telegram_text as article_text, telegram_entities, delivery_detail, delivery_results
 from news_preview import telegram_preview_url
+from notification_schedule import hold_until, load_schedule
 
 
 class TelegramError(Exception):
@@ -205,6 +206,8 @@ class TelegramNotifications:
             if stopped():
                 return
             now = time.time()
+            if not test and hold_until(load_schedule(self.path.parent), now):
+                return
             with self.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 stale = db.execute("UPDATE deliveries SET state='unknown',detail='전송 중 종료: 방에서 수신 확인 필요' WHERE state='sending' AND claimed<?", (now - 60,)).rowcount
@@ -224,6 +227,8 @@ class TelegramNotifications:
                     if not pending:
                         return
                     batch, article = select_representative(pending)
+                    if hold_until(load_schedule(self.path.parent)):
+                        return
                 db.executemany("UPDATE deliveries SET state='sending',claimed=? WHERE chat_id=? AND url=?",
                                [(now, config['chat_id'], key) for key, _ in batch])
                 db.execute('UPDATE settings SET next_send=? WHERE id=1', (now + 4,))

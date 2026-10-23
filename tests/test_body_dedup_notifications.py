@@ -28,6 +28,9 @@ BODY = ('OK저축은행은 대출 신청 고객 250명의 개인정보 유출을
 class BodySharingTests(unittest.TestCase):
     def test_grouped_event_rechecks_sent_story_before_another_url_is_shared(self):
         with tempfile.TemporaryDirectory() as directory, closing(Store(Path(directory))) as store:
+            config = store.load_config()
+            config['sharing_schedule']['enabled'] = False
+            store.save_config(config)
             path = Path(directory)
             now = time.time() + 1
             a = Article('https://example.com/a', 'OK저축은행 고객 250명 개인정보 유출', 'A', now - 2, '')

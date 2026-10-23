@@ -206,6 +206,10 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(migrated.refresh_status(1), (False, 0, ''))
 
     def setUp(self):
+        # Delivery-policy tests control the clock separately; these exercise transport.
+        schedule = patch('kakao_notifications.load_schedule', return_value={'enabled': False})
+        schedule.start()
+        self.addCleanup(schedule.stop)
         preview = patch('kakao_notifications.article_preview', side_effect=lambda article: article)
         preview.start()
         self.addCleanup(preview.stop)

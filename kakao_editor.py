@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from ui_theme import GAP, PADDING
+from notification_schedule import schedule_status
 
 
 def open_kakao_editor(app):
@@ -28,10 +29,11 @@ def open_kakao_editor(app):
     header = tk.Frame(outer, bg=c['bg'])
     header.grid(row=0, column=0, sticky='ew', pady=(0, GAP))
     app.label(header, '카카오 알림', 22).pack(side='left')
+    app.button(header, '공유 시간 설정', lambda: app.settings(sharing=True)).pack(side='right', padx=(12, 0))
     app.label(header, '데모 · 발송 중지' if app.demo else '새 기사 자동 알림', 10,
               c['warning'] if app.demo else c['accent']).pack(side='right')
-    app.label(outer, '같은 기관의 중요 뉴스를 묶어 제목·원문 링크를 나와의 채팅방으로 보냅니다.',
-              11, c['muted'], anchor='w').grid(row=1, column=0, sticky='ew', pady=(0, GAP))
+    schedule_label = app.label(outer, '', 11, c['muted'], anchor='w', justify='left')
+    schedule_label.grid(row=1, column=0, sticky='ew', pady=(0, GAP))
 
     content = tk.Frame(outer, bg=c['bg'])
     content.grid(row=2, column=0, sticky='nsew')
@@ -337,6 +339,8 @@ def open_kakao_editor(app):
     def update_history():
         if app.closed or not win.winfo_exists():
             return
+        schedule_label.configure(text='같은 기관의 중요 뉴스를 묶어 제목·원문 링크를 나와의 채팅방으로 보냅니다.\n' +
+                                 schedule_status(app.config['sharing_schedule']))
         refresh_users()
         while not test_results.empty():
             label, state, detail = test_results.get_nowait()

@@ -665,6 +665,24 @@ class GuiTests(unittest.TestCase):
         finally:
             self.app.demo = True
 
+    def test_missing_collection_progress_cancels_old_cycle_and_restarts_automatically(self):
+        self.app.demo = False
+        self.app.telegram_next = self.app.kakao_next = float('inf')
+        self.app.busy = True
+        self.app.fetch_heartbeat = time.monotonic() - 200
+        revision = self.app.revision
+        try:
+            with patch.object(self.app, 'start_summaries'), \
+                    patch.object(self.app, 'start_fetch', side_effect=lambda: setattr(self.app, 'busy', True)) as fetch:
+                self.app.tick()
+            fetch.assert_called_once()
+            self.assertEqual(self.app.revision, revision + 1)
+            self.app.events.put(('done', revision, [], []))
+            self.app.process_events()
+            self.assertTrue(self.app.busy)
+        finally:
+            self.app.demo = True
+
     def test_failed_cycle_retries_automatically_and_respects_server_cooldown(self):
         self.app.demo = False
         self.app.kakao_next = float('inf')

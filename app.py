@@ -1,6 +1,10 @@
 """Keyword news monitor. Run: python app.py"""
 from __future__ import annotations
 
+if __name__ == '__main__':
+    import multiprocessing
+    multiprocessing.freeze_support()
+
 import argparse
 import logging
 from logging.handlers import RotatingFileHandler
@@ -85,6 +89,7 @@ class NewsMonitor:
         self.cycle_stored = set()
         self.cycle_storage_errors = []
         self.busy = False
+        self.fetch_heartbeat = time.monotonic()
         self.closed = False
         self.revision = 0
         self.next_fetch = time.monotonic()
@@ -611,12 +616,13 @@ class NewsMonitor:
             return
         rules = [dict(entry) for entry in self.config["keywords"] if entry["enabled"]]
         # Allow a full catalog sweep at the existing five-second request pace.
-        query_count = len({query for entry in rules for query in SearchRule(entry).queries})
+        query_count = self.collector.query_count(rules)
         self.collector.cycle_timeout = max(600, query_count * (
             self.collector.google_request_interval + self.collector.timeout / self.collector.workers) + 120)
         hours = self.config["hours"]
         revision = self.revision
         self.busy = True
+        self.fetch_heartbeat = time.monotonic()
         self.cycle_added = 0
         self.cycle_stored = set()
         self.cycle_storage_errors = []
@@ -703,6 +709,7 @@ class NewsMonitor:
                 _, revision, keyword, articles = event
                 if revision != self.revision:
                     continue
+                self.fetch_heartbeat = time.monotonic()
                 try:
                     self.cycle_added += self.store.ingest(keyword, articles)
                     self.cycle_stored.add(keyword)
@@ -713,6 +720,7 @@ class NewsMonitor:
             elif event[0] == "batch_progress":
                 _, revision, done, total, keyword = event
                 if revision == self.revision:
+                    self.fetch_heartbeat = time.monotonic()
                     self.last_status = f"수집 {done}/{total} · ‘{keyword}’ 확인 완료"
             elif event[0] == "progress":
                 self.last_status = f"‘{event[1]}’ 뉴스 확인 중…"
@@ -844,6 +852,12 @@ class NewsMonitor:
                 self.busy = False
         self.last_tick_wall = wall
         self.process_events()
+        if self.busy and time.monotonic() - self.fetch_heartbeat > max(120, self.collector.request_timeout + 30):
+            logging.warning('Collection stopped reporting progress; cancelling cycle %s and retrying', self.revision)
+            self.revision += 1
+            self.busy = False
+            self.next_fetch = time.monotonic()
+            self.last_status = '수집 응답 지연 · 자동 복구 중'
         self.start_summaries()
         if not self.demo and not self.telegram_busy and time.monotonic() >= self.telegram_next:
             self.telegram_busy = True
@@ -1461,6 +1475,14 @@ def main():
     if args.fullscreen:
         app.toggle_fullscreen()
     if args.smoke_test:
+        try:
+            from bounded_http import smoke_test
+            smoke_test()
+            logging.info('Bounded HTTP process timeout and recovery smoke test passed')
+        except Exception:
+            logging.exception('Bounded HTTP process smoke test failed')
+            app.close()
+            return 1
         # Exercise compiled NumPy/SciPy dependencies in the packaged executable.
         try:
             from news_similarity import body_score, clean_body

@@ -23,6 +23,15 @@ class Response(BytesIO):
 
 
 class CollectionTests(unittest.TestCase):
+    def test_deadline_query_count_matches_actual_company_alias_requests(self):
+        entries = [entry for name, aliases in list(COMPANIES.items())[:2]
+                   for entry in make_entries(name, aliases, TOPICS)]
+        client = NewsCollector(google_request_interval=0)
+        with patch.object(client, 'fetch', return_value=[]) as fetch:
+            report = client.collect(entries)
+        self.assertFalse(report.errors)
+        self.assertEqual(NewsCollector.query_count(entries), fetch.call_count)
+
     def test_single_stuck_request_does_not_wait_for_large_catalog_deadline(self):
         release = threading.Event()
         client = NewsCollector(workers=1, fallback=True, cycle_timeout=3600,
@@ -137,7 +146,7 @@ class CollectionTests(unittest.TestCase):
             active -= 1
             return Response()
 
-        with patch('news_collection.urllib.request.urlopen', side_effect=network):
+        with patch('news_collection.urlopen', side_effect=network):
             first = client.collect([{'name': str(i)} for i in range(4)])
             second = client.collect([{'name': 'next'}])
         self.assertFalse(first.errors or second.errors)
@@ -148,7 +157,7 @@ class CollectionTests(unittest.TestCase):
     def test_paced_google_503_stops_waiting_requests(self):
         client = NewsCollector(google_request_interval=.05)
         error = urllib.error.HTTPError('url', 503, 'busy', {}, None)
-        with patch('news_collection.urllib.request.urlopen', side_effect=error) as network:
+        with patch('news_collection.urlopen', side_effect=error) as network:
             report = client.collect([{'name': str(i)} for i in range(20)])
         self.assertEqual(network.call_count, 1)
         self.assertEqual(len(report.errors), 20)
@@ -158,7 +167,7 @@ class CollectionTests(unittest.TestCase):
         client = NewsCollector(google_request_interval=5)
         cancel = threading.Event()
         published = []
-        with patch('news_collection.urllib.request.urlopen', return_value=Response()) as network:
+        with patch('news_collection.urlopen', return_value=Response()) as network:
             report = client.collect([{'name': str(i)} for i in range(8)], cancelled=cancel.is_set,
                                     on_result=lambda name, articles: (published.append(name), cancel.set()))
         self.assertTrue(report.cancelled)
@@ -176,7 +185,7 @@ class CollectionTests(unittest.TestCase):
             client._cool_down({'Retry-After': '7200'})
             self.assertEqual(client.cooldown_remaining(), 7200)
             client.cooldown_until = 0
-            with patch('news_collection.urllib.request.urlopen', return_value=Response()):
+            with patch('news_collection.urlopen', return_value=Response()):
                 client.fetch('recovery', 24)
             client._cool_down({})
             self.assertEqual(client.cooldown_remaining(), 300)
@@ -283,7 +292,7 @@ class CollectionTests(unittest.TestCase):
     def test_503_opens_circuit_and_honors_retry_after(self):
         client = NewsCollector(google_request_interval=0)
         error = urllib.error.HTTPError('https://news.google.com', 503, 'unavailable', {'Retry-After': '120'}, None)
-        with patch('news_collection.urllib.request.urlopen', side_effect=error) as network:
+        with patch('news_collection.urlopen', side_effect=error) as network:
             report = client.collect([{'name': str(i)} for i in range(22)])
             self.assertLessEqual(network.call_count, 4)
             before = network.call_count
@@ -298,15 +307,15 @@ class CollectionTests(unittest.TestCase):
         body = '''<rss><channel><item><title>한전 해킹</title><link>https://example.com/a</link><pubDate>Sun, 04 Oct 2026 03:00:00 GMT</pubDate></item></channel></rss>'''.encode()
         first = Response(body, {'ETag': '"v1"', 'Last-Modified': 'Sun, 04 Oct 2026 03:00:00 GMT'})
         not_modified = urllib.error.HTTPError('url', 304, 'not modified', {}, None)
-        with patch('news_collection.urllib.request.urlopen', side_effect=[first, not_modified]) as network:
+        with patch('news_collection.urlopen', side_effect=[first, not_modified]) as network:
             original = client.fetch('one', 24)
             refreshed = client.fetch('one', 24)
         self.assertEqual(original, refreshed)
         self.assertEqual(network.call_args.args[0].get_header('If-none-match'), '"v1"')
-        with patch('news_collection.urllib.request.urlopen', side_effect=TimeoutError()):
+        with patch('news_collection.urlopen', side_effect=TimeoutError()):
             with self.assertRaises(TimeoutError):
                 client.fetch('one', 24)
-        with patch('news_collection.urllib.request.urlopen', return_value=Response()) as network:
+        with patch('news_collection.urlopen', return_value=Response()) as network:
             client.fetch('one', 48)
         self.assertIsNone(network.call_args.args[0].get_header('If-none-match'))
 
@@ -372,7 +381,7 @@ class CollectionTests(unittest.TestCase):
             if urllib.parse.urlsplit(request.full_url).hostname == 'news.google.com':
                 raise urllib.error.HTTPError(request.full_url, 503, 'unavailable', {'Retry-After': '120'}, None)
             return Response()
-        with patch('news_collection.urllib.request.urlopen', side_effect=network) as opened:
+        with patch('news_collection.urlopen', side_effect=network) as opened:
             first = client.collect([{'name': 'one'}])
             again = client.collect([{'name': 'two'}])
         self.assertFalse(first.errors)
@@ -384,7 +393,7 @@ class CollectionTests(unittest.TestCase):
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(opened.call_args.args[0].full_url).query)['q'][0]
         self.assertNotIn('when:', query)
         error = urllib.error.HTTPError('https://www.bing.com', 429, 'busy', {'Retry-After': '120'}, None)
-        with patch('news_collection.urllib.request.urlopen', side_effect=error):
+        with patch('news_collection.urlopen', side_effect=error):
             failed = client.collect([{'name': 'three'}])
         self.assertEqual(failed.results, [])
         self.assertEqual(len(failed.errors), 1)

@@ -150,7 +150,7 @@ class SecurityProfileTests(unittest.TestCase):
         <item><title>다른 기업 랜섬웨어 피해</title><link>https://example.com/b</link><pubDate>Sun, 04 Oct 2026 03:00:00 GMT</pubDate></item>
         <item><title>한전 일반 계약</title><link>https://example.com/c</link><pubDate>Sun, 04 Oct 2026 03:00:00 GMT</pubDate></item>
         </channel></rss>'''.encode()
-        with patch('news_core.urllib.request.urlopen') as connection:
+        with patch('news_collection.urlopen') as connection:
             connection.return_value.__enter__.return_value.read.return_value = feed
             results = fetch_news(rule)
             queries = [parse_qs(urlsplit(call.args[0].full_url).query)['q'][0] for call in connection.call_args_list]

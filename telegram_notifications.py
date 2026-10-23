@@ -7,6 +7,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
+from bounded_http import RequestNotSent, urlopen
 
 from kakao_notifications import protect
 from notification_policy import initialize_cutoffs, prepare_queue, remember_article, reset_queue
@@ -32,7 +33,7 @@ def api(token, method, fields=None):
         data=json.dumps(fields or {}, ensure_ascii=False).encode('utf-8'),
         headers={'Content-Type': 'application/json'})
     try:
-        with urllib.request.urlopen(request, timeout=12) as response:
+        with urlopen(request, timeout=12) as response:
             result = json.load(response)
     except urllib.error.HTTPError as exc:
         delay = 0
@@ -42,6 +43,8 @@ def api(token, method, fields=None):
             except (ValueError, AttributeError, OSError):
                 delay = 30
         raise TelegramError(exc.code, delay if type(delay) is int else 30) from None
+    except RequestNotSent:
+        raise RequestNotSent('텔레그램 통신 준비 지연: 자동 재시도 예정') from None
     except (OSError, ValueError):
         raise TelegramError() from None
     if not isinstance(result, dict) or result.get('ok') is not True:
@@ -206,7 +209,7 @@ class TelegramNotifications:
                 db.execute('BEGIN IMMEDIATE')
                 stale = db.execute("UPDATE deliveries SET state='unknown',detail='전송 중 종료: 방에서 수신 확인 필요' WHERE state='sending' AND claimed<?", (now - 60,)).rowcount
                 if stale:
-                    db.execute("UPDATE settings SET enabled=0,detail='전송 결과 불명: 수신 확인 후 다시 시작하세요.' WHERE id=1")
+                    db.execute("UPDATE settings SET detail='이전 전송 결과 불명: 해당 기사는 재전송하지 않고 새 기사 공유를 계속합니다.' WHERE id=1")
                 config = db.execute('SELECT * FROM settings WHERE id=1').fetchone()
                 if not config['enabled'] or now < config['next_send']:
                     return
@@ -236,6 +239,8 @@ class TelegramNotifications:
                          'prefer_large_media': True}})
                 if isinstance(response, dict) and type(response.get('message_id')) is int:
                     state, detail = 'sent', '텔레그램 API 전송 성공 · 기사 링크 미리보기 요청'
+            except RequestNotSent:
+                state, detail, wait = 'pending', '통신 준비 지연: 30초 후 자동 재시도합니다.', 30
             except TelegramError as exc:
                 if exc.code == 429:
                     state, detail, wait = 'pending', str(exc), max(4, exc.retry_after)
@@ -244,11 +249,14 @@ class TelegramNotifications:
             except Exception:
                 # Do not log raw exceptions or automatically repeat ambiguous deliveries.
                 pass
+            if state == 'unknown':
+                detail = '전송 결과 불명: 해당 기사는 재전송하지 않고 새 기사 공유를 계속합니다.'
+                wait = 30
             with self.connect() as db:
                 detail = delivery_detail(article, detail)
                 db.executemany('UPDATE deliveries SET state=?,detail=? WHERE chat_id=? AND url=?',
                                delivery_results(batch, article, state, detail, config['chat_id']))
                 db.execute('UPDATE settings SET next_send=?,detail=? WHERE id=1', (time.time() + wait, detail))
-                if state in ('failed', 'unknown'):
+                if state == 'failed':
                     db.execute('UPDATE settings SET enabled=0 WHERE id=1')
             return state, detail

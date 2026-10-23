@@ -77,6 +77,7 @@ class TelegramTests(unittest.TestCase):
     def test_ambiguous_response_never_retried(self):
         self.queue.enqueue([self.article])
         self.assertEqual(self.queue.deliver(request=lambda *args: {})[0], 'unknown')
+        self.assertTrue(self.queue.settings()['enabled'])
         self.queue.retry_failed()
         self.queue.activate(-100, request=self.request)
         self.queue.deliver(request=lambda *args: self.fail('must not resend'))
@@ -125,7 +126,31 @@ class TelegramTests(unittest.TestCase):
             db.execute("UPDATE deliveries SET state='sending',claimed=?", (time.time() - 100,))
         TelegramNotifications(self.directory).deliver(request=lambda *args: self.fail('unsafe resend'))
         self.assertEqual(self.queue.status()[0]['state'], 'unknown')
-        self.assertFalse(self.queue.settings()['enabled'])
+        self.assertTrue(self.queue.settings()['enabled'])
+
+    def test_disconnect_does_not_disable_sharing_and_next_story_sends_after_restart(self):
+        self.queue.enqueue([self.article])
+        def disconnected(*args):
+            raise TelegramError()
+        self.assertEqual(self.queue.deliver(request=disconnected)[0], 'unknown')
+        restarted = TelegramNotifications(self.directory)
+        self.assertTrue(restarted.settings()['enabled'])
+        restarted.enqueue([{**self.article, 'url': 'https://example.com/next',
+                            'title': '카카오 서비스 장애 중단 발생'}])
+        restarted.deliver(request=lambda *args: self.fail('must respect recovery delay'))
+        self.ready()
+        self.assertEqual(restarted.deliver(request=self.request)[0], 'sent')
+        self.assertEqual(sorted(row['state'] for row in restarted.status()), ['sent', 'unknown'])
+
+    def test_request_never_submitted_is_retried_without_disabling_sharing(self):
+        from bounded_http import RequestNotSent
+        self.queue.enqueue([self.article])
+        def unavailable(*args):
+            raise RequestNotSent()
+        self.assertEqual(self.queue.deliver(request=unavailable)[0], 'pending')
+        self.assertTrue(self.queue.settings()['enabled'])
+        self.ready()
+        self.assertEqual(self.queue.deliver(request=self.request)[0], 'sent')
 
     def test_webhook_is_not_removed(self):
         calls = []
@@ -138,12 +163,12 @@ class TelegramTests(unittest.TestCase):
 
     def test_api_redacts_url_and_rejects_malformed_success(self):
         for body in (b'{}', b'[]', b'{"ok":1}', b'not-json'):
-            with patch('urllib.request.urlopen', return_value=io.BytesIO(body)):
+            with patch('telegram_notifications.urlopen', return_value=io.BytesIO(body)):
                 with self.assertRaises(TelegramError) as error:
                     api(TOKEN, 'sendMessage')
                 self.assertNotIn(TOKEN, str(error.exception))
         remote = urllib.error.HTTPError('https://api.telegram.org/bot' + TOKEN, 401, TOKEN, {}, None)
-        with patch('urllib.request.urlopen', side_effect=remote):
+        with patch('telegram_notifications.urlopen', side_effect=remote):
             with self.assertRaises(TelegramError) as error:
                 api(TOKEN, 'getMe')
             self.assertNotIn(TOKEN, str(error.exception))

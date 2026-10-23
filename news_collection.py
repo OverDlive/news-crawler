@@ -11,6 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from bounded_http import urlopen
 from news_core import RSS_HEADERS, parse_feed
 from search_rules import SearchRule
 
@@ -32,6 +33,14 @@ class CollectionReport:
 
 
 class NewsCollector:
+    @staticmethod
+    def query_count(entries):
+        queries = set()
+        for entry in entries:
+            rule = SearchRule(entry)
+            queries.update(rule.bing_queries if hasattr(rule, 'company') else rule.queries)
+        return len(queries)
+
     def __init__(self, workers=4, timeout=12, cache_size=128, fallback=False, google_request_interval=5,
                  cycle_timeout=600, request_timeout=None):
         self.workers = max(1, min(workers, 4))
@@ -106,9 +115,11 @@ class NewsCollector:
                     break
                 time.sleep(min(.1, remaining))
             self.google_next_request = time.monotonic() + self.google_request_interval
-            return self._read_url(url, provider)
         finally:
             self.google_request_lock.release()
+        # Only reserve start times under the pacing lock. Network I/O has its
+        # own hard deadline and must not hold the other Google workers hostage.
+        return self._read_url(url, provider)
 
     def _read_url(self, url, provider):
         if self.cooldown_remaining(provider):
@@ -123,7 +134,7 @@ class NewsCollector:
                 headers['If-Modified-Since'] = cached[1]
         request = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urlopen(request, timeout=self.timeout) as response:
                 data = response.read(4 * 1024 * 1024 + 1)
                 etag = response.headers.get('ETag')
                 modified = response.headers.get('Last-Modified')

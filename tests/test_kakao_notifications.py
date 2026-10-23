@@ -14,8 +14,8 @@ class NotificationTests(unittest.TestCase):
         import io
         for payload in ('{"result_code":false}', '{"result_code":"0"}', '[]', '{}'):
             with self.subTest(payload=payload):
-                with patch('urllib.request.urlopen', return_value=io.BytesIO(payload.encode())):
-                    self.assertEqual(send_memo('test-token', self.article)[0], 'failed')
+                with patch('kakao_notifications.urlopen', return_value=io.BytesIO(payload.encode())):
+                    self.assertEqual(send_memo('test-token', self.article)[0], 'unknown')
 
     def test_subscription_toggle_is_persistent_and_only_pauses_selected_user(self):
         self.queue.save_user('둘째', 'second-test-token')
@@ -62,7 +62,7 @@ class NotificationTests(unittest.TestCase):
     def test_immediate_test_failure_is_recorded_and_not_automatically_repeated(self):
         user = self.queue.users()[0][0]
         self.assertEqual(self.queue.send_test(user, sender=lambda *args: ('unknown', '결과 불명'))[0], 'unknown')
-        self.assertFalse(self.queue.users()[0][2])
+        self.assertTrue(self.queue.users()[0][2])
         self.assertIn('테스트 알림', self.queue.status()[0][2])
         self.queue.deliver(sender=lambda *args: self.fail('must not repeat test'))
 
@@ -92,7 +92,7 @@ class NotificationTests(unittest.TestCase):
             def __enter__(self): return self
             def __exit__(self, *args): pass
             def read(self): return b'{"access_token":"idle-renewed-access","expires_in":21600}'
-        with patch('urllib.request.urlopen', return_value=Response()) as request:
+        with patch('kakao_notifications.urlopen', return_value=Response()) as request:
             self.queue.deliver(sender=lambda *args: self.fail('there are no articles to send'))
             self.assertEqual(request.call_args.args[0].full_url, 'https://kauth.kakao.com/oauth/token')
         self.assertGreater(self.queue.refresh_status(user)[1], time.time() + 21000)
@@ -179,7 +179,7 @@ class NotificationTests(unittest.TestCase):
             def __enter__(self): return self
             def __exit__(self, *args): pass
             def read(self): return b'{"access_token":"new-access","expires_in":21600}'
-        with patch('urllib.request.urlopen', return_value=Response()) as call:
+        with patch('kakao_notifications.urlopen', return_value=Response()) as call:
             self.assertEqual(refresh_tokens('app-key', 'refresh-secret', 'client-secret')['expires_in'], 21600)
             from urllib.parse import parse_qs
             fields = parse_qs(call.call_args.args[0].data.decode())
@@ -187,7 +187,7 @@ class NotificationTests(unittest.TestCase):
                                      'refresh_token': ['refresh-secret'], 'client_secret': ['client-secret']})
         error = urllib.error.HTTPError('https://kauth.kakao.com', 400, 'secret', {},
                                       io.BytesIO(b'{"error_description":"refresh-secret","error_code":"KOE322"}'))
-        with patch('urllib.request.urlopen', side_effect=error):
+        with patch('kakao_notifications.urlopen', side_effect=error):
             with self.assertRaises(RefreshError) as caught:
                 refresh_tokens('app-key', 'refresh-secret')
             self.assertTrue(caught.exception.permanent)
@@ -244,13 +244,38 @@ class NotificationTests(unittest.TestCase):
         self.queue.deliver(sender=sender)
         self.assertEqual(tokens, ['sample-test-token', 'second-test-token'])
 
-    def test_failure_pauses_user_and_requires_explicit_retry(self):
+    def test_unknown_keeps_subscription_and_requires_explicit_retry_for_same_article(self):
         self.queue.enqueue([self.article])
         self.queue.deliver(sender=lambda *args: ('unknown', '결과 불명'))
-        self.assertFalse(self.queue.users()[0][2])
+        self.assertTrue(self.queue.users()[0][2])
         self.queue.save_user('홍길동', 'replacement-token')
         self.queue.deliver(sender=lambda *args: self.fail('must not resend automatically'))
         self.queue.retry(self.queue.users()[0][0])
+        self.queue.deliver(sender=lambda *args: ('sent', 'OK'))
+        self.assertEqual(self.queue.status()[0][1], 'sent')
+
+    def test_unknown_then_restart_continues_with_different_story(self):
+        self.queue.enqueue([self.article])
+        self.queue.deliver(sender=lambda *args: ('unknown', '결과 불명'))
+        restarted = Notifications(Path(self.temp.name))
+        self.assertTrue(restarted.users()[0][2])
+        restarted.enqueue([{**self.article, 'url': 'https://example.com/next',
+                            'title': '카카오 서비스 장애 중단 발생'}])
+        restarted.deliver(sender=lambda *args: self.fail('must respect recovery delay'))
+        with restarted.connect() as db:
+            db.execute('UPDATE recipients SET next_send=0')
+        calls = []
+        restarted.deliver(sender=lambda token, article: (calls.append(article['url']) or 'sent', 'OK'))
+        self.assertEqual(calls, ['https://example.com/next'])
+        self.assertEqual(sorted(row[1] for row in restarted.status()), ['sent', 'unknown'])
+
+    def test_rate_limit_waits_and_retries_without_disabling_user(self):
+        self.queue.enqueue([self.article])
+        self.queue.deliver(sender=lambda *args: ('pending', '발송 제한'))
+        self.assertTrue(self.queue.users()[0][2])
+        self.queue.deliver(sender=lambda *args: self.fail('must respect server cooldown'))
+        with self.queue.connect() as db:
+            db.execute('UPDATE recipients SET next_send=0')
         self.queue.deliver(sender=lambda *args: ('sent', 'OK'))
         self.assertEqual(self.queue.status()[0][1], 'sent')
 
@@ -264,7 +289,7 @@ class NotificationTests(unittest.TestCase):
             def __enter__(self): return self
             def __exit__(self, *args): pass
             def read(self): return b'{"result_code":0}'
-        with patch('urllib.request.urlopen', return_value=Response()) as request:
+        with patch('kakao_notifications.urlopen', return_value=Response()) as request:
             self.assertEqual(send_memo('secret', self.article)[0], 'sent')
             sent = request.call_args.args[0]
             self.assertEqual(sent.get_header('Authorization'), 'Bearer secret')
@@ -272,7 +297,7 @@ class NotificationTests(unittest.TestCase):
             template = json.loads(parse_qs(sent.data.decode())['template_object'][0])
             self.assertEqual(template['link']['web_url'], self.article['url'])
         error = urllib.error.HTTPError('https://kapi.kakao.com', 401, 'secret', {}, None)
-        with patch('urllib.request.urlopen', side_effect=error):
+        with patch('kakao_notifications.urlopen', side_effect=error):
             state, detail = send_memo('secret', self.article)
             self.assertEqual(state, 'failed')
             self.assertNotIn('secret', detail)

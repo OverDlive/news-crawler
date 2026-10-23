@@ -75,7 +75,7 @@ class SearchRuleTests(unittest.TestCase):
         <item><title>한전 전기 주가</title><link>https://example.com/b</link>
         <pubDate>Sun, 04 Oct 2026 03:00:00 GMT</pubDate></item>
         </channel></rss>'''.encode()
-        with patch("news_core.urllib.request.urlopen") as connection:
+        with patch("news_collection.urlopen") as connection:
             connection.return_value.__enter__.return_value.read.return_value = feed
             results = fetch_news({"name": "표시 이름", "condition": "한전 AND 전기 NOT 주가"})
             query = parse_qs(urlsplit(connection.call_args.args[0].full_url).query)["q"][0]

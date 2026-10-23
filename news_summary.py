@@ -6,6 +6,9 @@ import re
 import time
 import urllib.parse
 import urllib.request
+from types import SimpleNamespace
+
+from bounded_http import urlopen
 
 from news_core import RSS_HEADERS, plain_text, valid_link
 
@@ -139,13 +142,20 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
 class ArticleSummarizer:
     def __init__(self, timeout=10):
         self.timeout = timeout
-        self.opener = urllib.request.build_opener(SafeRedirect())
+        self.opener = SimpleNamespace(open=urlopen)
+        self.deadline = None
+
+    def remaining(self):
+        remaining = self.timeout if self.deadline is None else min(self.timeout, self.deadline - time.monotonic())
+        if remaining <= 0:
+            raise TimeoutError('기사 조회 전체 대기 시간 초과')
+        return remaining
 
     def read(self, url):
         if not valid_link(url):
             raise ValueError('지원하지 않는 기사 링크')
         headers = {**RSS_HEADERS, 'Accept': 'text/html,application/xhtml+xml'}
-        with self.opener.open(urllib.request.Request(url, headers=headers), timeout=self.timeout) as response:
+        with self.opener.open(urllib.request.Request(url, headers=headers), timeout=self.remaining()) as response:
             data = response.read(2 * 1024 * 1024 + 1)
             if len(data) > 2 * 1024 * 1024:
                 raise ValueError('기사 응답 크기 초과')
@@ -160,6 +170,13 @@ class ArticleSummarizer:
             return parser, response.geturl()
 
     def read_article(self, row):
+        self.deadline = time.monotonic() + self.timeout * 3
+        try:
+            return self._read_article(row)
+        finally:
+            self.deadline = None
+
+    def _read_article(self, row):
         try:
             parser, url = self.read(row['url'])
         except Exception:
@@ -207,7 +224,7 @@ class ArticleSummarizer:
             'https://news.google.com/_/DotsSplashUi/data/batchexecute?rpcids=Fbv4je',
             data=data, headers={**RSS_HEADERS,
                                 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'})
-        with self.opener.open(request, timeout=self.timeout) as response:
+        with self.opener.open(request, timeout=self.remaining()) as response:
             raw = response.read(1024 * 1024 + 1)
         if len(raw) > 1024 * 1024:
             raise ValueError('원문 연결 응답 크기 초과')
@@ -246,7 +263,7 @@ class ArticleSummarizer:
     def publisher_link(self, row):
         """Google opaque links: accept a Bing publisher result only for the same story."""
         from news_collection import NewsCollector
-        articles = NewsCollector(timeout=self.timeout).fetch_bing('"' + row['title'] + '"', 168)
+        articles = NewsCollector(timeout=self.remaining()).fetch_bing('"' + row['title'] + '"', 168)
         normalize = lambda value: re.sub(r'\s+', '', value).casefold()
         published = row.get('published', time.time())
         for article in articles:

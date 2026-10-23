@@ -10,6 +10,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from bounded_http import RequestNotSent, urlopen
 from notification_policy import initialize_cutoffs, prepare_queue, remember_article, reset_queue
 from news_importance import share_priority
 from news_digest import select_representative, delivery_detail, delivery_results
@@ -62,9 +63,11 @@ def send_memo(token, article):
         data=payload, headers={'Authorization': 'Bearer ' + token,
                              'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8'})
     try:
-        with urllib.request.urlopen(request, timeout=12) as response:
+        with urlopen(request, timeout=12) as response:
             result = json.load(response)
-        if not isinstance(result, dict) or type(result.get('result_code')) is not int or result['result_code'] != 0:
+        if not isinstance(result, dict) or type(result.get('result_code')) is not int:
+            return 'unknown', '카카오 응답 확인 불가: 해당 기사는 재전송하지 않고 새 기사 공유를 계속합니다'
+        if result['result_code'] != 0:
             return 'failed', '카카오 응답 오류: 전송 결과를 확인하세요'
         preview = '기사 이미지 카드' if template['object_type'] == 'feed' else '이미지 확인 불가: 텍스트 링크'
         return 'sent', '카카오 API 전송 성공 (result_code=0) · ' + preview + ' · 휴대폰 수신 여부는 별도 확인 필요'
@@ -74,10 +77,16 @@ def send_memo(token, article):
             return 'failed', '토큰 만료/인증 실패: 토큰을 교체하세요'
         if error.code == 403:
             return 'failed', '권한 오류: talk_message 동의를 확인하세요'
+        if error.code == 429:
+            return 'pending', '카카오 발송 제한: 5분 후 자동 재시도합니다'
+        if error.code >= 500:
+            return 'unknown', '카카오 서버 오류: 해당 기사는 재전송하지 않고 새 기사 공유를 계속합니다'
         return 'failed', f'카카오 HTTP {error.code}: 권한·웹 도메인·쿼터를 확인하세요'
+    except RequestNotSent:
+        return 'pending', '통신 준비 지연: 5분 후 자동 재시도합니다'
     except (OSError, ValueError):
         # A timeout may occur after delivery. Do not automatically resend.
-        return 'unknown', '전송 결과 불명: 카카오톡 확인 후 수동 재시도하세요'
+        return 'unknown', '전송 결과 불명: 해당 기사는 재전송하지 않고 새 기사 공유를 계속합니다'
 
 
 class RefreshError(Exception):
@@ -94,7 +103,7 @@ def refresh_tokens(client_id, refresh_token, client_secret=''):
         data=urllib.parse.urlencode(fields).encode(),
         headers={'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8'})
     try:
-        with urllib.request.urlopen(request, timeout=12) as response:
+        with urlopen(request, timeout=12) as response:
             result = json.load(response)
     except urllib.error.HTTPError as error:
         try:
@@ -137,6 +146,7 @@ class Notifications:
             for column, declaration in [('refresh_token', "TEXT NOT NULL DEFAULT ''"),
                     ('client_id', "TEXT NOT NULL DEFAULT ''"), ('client_secret', "TEXT NOT NULL DEFAULT ''"),
                     ('expires_at', 'REAL NOT NULL DEFAULT 0'), ('next_refresh', 'REAL NOT NULL DEFAULT 0'),
+                    ('next_send', 'REAL NOT NULL DEFAULT 0'),
                     ('auth_error', "TEXT NOT NULL DEFAULT ''")]:
                 if column not in columns:
                     db.execute(f'ALTER TABLE recipients ADD COLUMN {column} {declaration}')
@@ -282,7 +292,7 @@ class Notifications:
         with self.connect() as db:
             db.execute('UPDATE deliveries SET state=?,detail=? WHERE recipient=? AND url=?',
                        (state, '테스트 알림 · ' + detail, user, key))
-            if state != 'sent':
+            if state == 'failed':
                 db.execute('UPDATE recipients SET enabled=0 WHERE id=?', (user,))
         return state, detail
 
@@ -304,6 +314,7 @@ class Notifications:
     def retry(self, user):
         with self.connect() as db:
             db.execute("UPDATE deliveries SET state='pending', detail='' WHERE recipient=? AND state IN ('failed','unknown')", (user,))
+            db.execute('UPDATE recipients SET next_send=0 WHERE id=?', (user,))
 
     def deliver(self, stopped=lambda: False, sender=send_memo):
         self.refresh_due(stopped=stopped)
@@ -318,7 +329,8 @@ class Notifications:
                 candidates = db.execute('''SELECT d.recipient,d.url,d.article,r.token FROM deliveries d
                     JOIN recipients r ON r.id=d.recipient
                     WHERE d.state='pending' AND r.enabled=1 AND r.auth_error=''
-                    AND (r.refresh_token='' OR r.expires_at>?) ORDER BY d.rowid''', (time.time(),)).fetchall()
+                    AND r.next_send<=? AND (r.refresh_token='' OR r.expires_at>?) ORDER BY d.rowid''',
+                    (time.time(), time.time())).fetchall()
                 if not candidates:
                     break
                 row = max(candidates, key=lambda item: share_priority(json.loads(item[2]))[0])
@@ -335,6 +347,9 @@ class Notifications:
                 detail = delivery_detail(article, detail)
                 db.executemany('UPDATE deliveries SET state=?,detail=? WHERE recipient=? AND url=?',
                                delivery_results(batch, article, state, detail, row[0]))
-                if state != 'sent':
+                if state in ('pending', 'unknown'):
+                    db.execute('UPDATE recipients SET next_send=? WHERE id=?',
+                               (time.time() + (300 if state == 'pending' else 30), row[0]))
+                if state == 'failed':
                     # Stop this user's queue until the operator fixes the token/configuration.
                     db.execute('UPDATE recipients SET enabled=0 WHERE id=?', (row[0],))

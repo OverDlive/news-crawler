@@ -60,7 +60,7 @@ class PreviewTests(unittest.TestCase):
 
     def test_kakao_actual_request_contains_one_clickable_feed(self):
         article = {**self.article, 'image_url': 'https://cdn.example/article.jpg'}
-        with patch('kakao_notifications.urllib.request.urlopen', return_value=io.BytesIO(b'{"result_code":0}')) as request:
+        with patch('kakao_notifications.urlopen', return_value=io.BytesIO(b'{"result_code":0}')) as request:
             self.assertEqual(send_memo('test-token', article)[0], 'sent')
         fields = parse_qs(request.call_args.args[0].data.decode())
         template = json.loads(fields['template_object'][0])
@@ -95,7 +95,7 @@ class PreviewTests(unittest.TestCase):
                                   json.dumps(['garturlres', self.article['url']])]]) + '\n'
         responses = [Response(portal, google), Response(rpc, google),
                      Response('<meta property="og:image" content="/real-news.jpg">', self.article['url'])]
-        with patch('urllib.request.OpenerDirector.open', side_effect=responses) as read:
+        with patch('news_summary.urlopen', side_effect=responses) as read:
             result = article_preview({**self.article, 'url': google})
             self.assertEqual(telegram_preview_url({**self.article, 'url': google}), self.article['url'])
         request = read.call_args_list[1].args[0]

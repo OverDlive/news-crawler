@@ -1,7 +1,9 @@
 """Real Tk smoke and integration checks; no network required."""
 from pathlib import Path
+import gc
 import sqlite3
 import tempfile
+import threading
 import time
 import tkinter as tk
 import unittest
@@ -594,6 +596,17 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(self.app.notifications.status(), [])
 
     def setUp(self):
+        # Cyclic collection can run on any allocating worker. Tk interpreters
+        # and Variables from previous tests must be finalized on this thread.
+        gc_enabled = gc.isenabled()
+        gc.disable()
+        def collect_tk_objects():
+            self.app = self.root = None
+            gc.collect()
+            if gc_enabled:
+                gc.enable()
+        self.addCleanup(collect_tk_objects)
+        self.initial_threads = set(threading.enumerate())
         self.directory = tempfile.TemporaryDirectory()
         self.root = create_root()
         self.app = NewsMonitor(self.root, Path(self.directory.name), demo=True)
@@ -604,6 +617,15 @@ class GuiTests(unittest.TestCase):
 
     def tearDown(self):
         self.app.close()
+        # Finish short-lived app workers before releasing the interpreter.
+        # Shared executor/pool threads outlive a test and own no Tk objects.
+        worker_names = {'news-fetch', 'news-summary', 'news-grouping',
+                        'notification-enqueue', 'telegram-send', 'kakao-send',
+                        'release-update', 'telegram-setup', 'kakao-test'}
+        for worker in threading.enumerate():
+            if worker not in self.initial_threads and worker.name in worker_names:
+                worker.join(timeout=10)
+                self.assertFalse(worker.is_alive(), f'GUI test left a worker running: {worker.name}')
         # Windows may briefly hold a just-closed directory handle (e.g. a file
         # scanner). Retry cleanup; persistent locks still fail the test.
         for attempt in range(20):

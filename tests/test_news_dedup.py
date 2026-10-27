@@ -12,6 +12,31 @@ def row(title, description='', published=1_800_000_000, source='신문 A'):
 
 
 class StoryTests(unittest.TestCase):
+    def test_reported_kisa_headline_with_prefix_spacing_and_publisher(self):
+        original = row('바다위를 막는다...KISA, 선박용 침해사고 성능 시험장 공개')
+        for title in ('바다 위를 막는다…한국인터넷진흥원, 선박용 침해사고 성능시험장 공개',
+                      '[종합] 바다위를 막는다...KISA, 선박용 침해사고 성능 시험장 공개 - 신문 B',
+                      'KISA, 선박용 침해사고 성능 시험장 공개'):
+            with self.subTest(title=title):
+                self.assertTrue(same_story(original, row(title, source='신문 B')))
+        for title in ('KISA, 선박용 침해사고 성능 시험장 공개 취소',
+                      'KISA, 금융권 랜섬웨어 사고 분석 결과 발표'):
+            self.assertFalse(same_story(original, row(title)))
+
+    def test_identical_unknown_subject_does_not_depend_on_first_word(self):
+        a = row('바다 위를 막는다…선박용 침해사고 성능 시험장 공개')
+        b = row('&quot;바다위를 막는다&quot;...선박용 침해사고 성능시험장 공개')
+        self.assertTrue(same_story(a, b))
+        self.assertFalse(same_story(row('...'), row('!!!')))
+
+    def test_decimal_counts_and_editorial_years_do_not_hide_duplicates(self):
+        a = row('한전 직원 2.4만명 개인정보 유출')
+        b = row('[2026 국감] 한국전력 직원 2만4천명 개인정보 유출')
+        self.assertTrue(same_story(a, b))
+        self.assertFalse(same_story(a, row('한전 직원 2.5만명 개인정보 유출')))
+        self.assertFalse(same_story(row('KISA 2025년 선박용 침해사고 성능 시험장 공개'),
+                                    row('KISA 2026년 선박용 침해사고 성능 시험장 공개')))
+
     def test_financial_and_government_aliases_and_event_wording(self):
         for a, b in (
             ('신한은행 고객정보 1000명 외부 노출 사고 확인',

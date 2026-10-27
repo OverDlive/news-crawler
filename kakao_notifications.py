@@ -305,7 +305,7 @@ class Notifications:
                 for article in articles:
                     if article['discovered'] >= registered:
                         remember_article(db, 'recipient', user, article)
-                prepare_queue(db, 'recipient', user)
+                prepare_queue(db, 'recipient', user, self.path.parent)
 
     def status(self):
         with self.connect() as db:
@@ -327,13 +327,16 @@ class Notifications:
                 break
             with self.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
+                ready = set()
                 for (user,) in db.execute('SELECT id FROM recipients WHERE enabled=1').fetchall():
-                    prepare_queue(db, 'recipient', user)
+                    ready.update((user, url) for url, _ in
+                                 prepare_queue(db, 'recipient', user, self.path.parent))
                 candidates = db.execute('''SELECT d.recipient,d.url,d.article,r.token FROM deliveries d
                     JOIN recipients r ON r.id=d.recipient
                     WHERE d.state='pending' AND r.enabled=1 AND r.auth_error=''
                     AND r.next_send<=? AND (r.refresh_token='' OR r.expires_at>?) ORDER BY d.rowid''',
                     (time.time(), time.time())).fetchall()
+                candidates = [row for row in candidates if (row[0], row[1]) in ready]
                 if not candidates:
                     break
                 row = max(candidates, key=lambda item: share_priority(json.loads(item[2]))[0])

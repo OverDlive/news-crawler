@@ -5,7 +5,7 @@ import re
 
 from news_dedup import WINDOW, _features, _quantities, normalize
 
-VERSION = 'tfidf-body-v2'
+VERSION = 'tfidf-body-v3'
 MIN_BODY = 150
 # Negative evidence is distinct from an inconclusive similarity measurement.
 CONFLICT = -1.0

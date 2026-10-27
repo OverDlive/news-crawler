@@ -191,7 +191,7 @@ class TelegramNotifications:
             for article in articles:
                 if article['discovered'] >= config['registered']:
                     remember_article(db, 'chat_id', config['chat_id'], article)
-            prepare_queue(db, 'chat_id', config['chat_id'])
+            prepare_queue(db, 'chat_id', config['chat_id'], self.path.parent)
 
     def status(self):
         with self.connect() as db:
@@ -223,7 +223,7 @@ class TelegramNotifications:
                                (config['chat_id'], key, json.dumps(article, ensure_ascii=False)))
                     batch = [(key, article)]
                 else:
-                    pending = prepare_queue(db, 'chat_id', config['chat_id'])
+                    pending = prepare_queue(db, 'chat_id', config['chat_id'], self.path.parent)
                     if not pending:
                         return
                     batch, article = select_representative(pending)

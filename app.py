@@ -709,7 +709,7 @@ class NewsMonitor:
                 repaint = True
             elif event[0] == 'summary_done':
                 self.summary_busy = False
-                refresh = True
+                refresh = notify = True
             elif event[0] == "partial":
                 _, revision, keyword, articles = event
                 if revision != self.revision:

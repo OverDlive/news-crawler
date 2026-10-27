@@ -7,9 +7,68 @@ from unittest.mock import patch
 
 from kakao_notifications import Notifications
 from telegram_notifications import TelegramNotifications
+from notification_policy import duplicate, ANALYSIS_WAIT
 
 
 class StoryDeliveryTests(unittest.TestCase):
+    def test_reported_title_republication_is_suppressed_for_seven_days(self):
+        original = {**self.article, 'title': '바다위를 막는다...KISA, 선박용 침해사고 성능 시험장 공개'}
+        repeated = {**original, 'url': 'https://other.com/repeat', 'source': '다른신문',
+                    'title': '[종합] 바다 위를 막는다…한국인터넷진흥원, 선박용 침해사고 성능시험장 공개 - 다른신문',
+                    'published': original['published'] + 3 * 86400}
+        self.assertTrue(duplicate(original, repeated))
+        self.assertFalse(duplicate(original, {**repeated, 'published': original['published'] + 8 * 86400}))
+        for service, cls in ((self.kakao, Notifications), (self.telegram, TelegramNotifications)):
+            calls = []
+            service.enqueue([original])
+            self.drain(service, calls)
+            restarted = cls(self.directory)
+            restarted.enqueue([repeated])
+            self.drain(restarted, calls)
+            self.assertEqual(len(calls), 1)
+
+    def test_resolved_original_url_suppresses_different_feed_links(self):
+        a = {**self.article, 'content_url': 'https://publisher.com/story?utm_source=a'}
+        b = {**self.article, 'url': 'https://feed.com/other', 'title': '다른 표현의 기사',
+             'content_url': 'https://publisher.com/story#top'}
+        self.assertTrue(duplicate(a, b))
+
+    def test_decimal_fact_changes_are_not_identical_titles(self):
+        a = {**self.article, 'title': 'KISA 침해사고 탐지 비율 6.8% 발표'}
+        b = {**self.article, 'url': 'https://example.com/new', 'title': 'KISA 침해사고 탐지 비율 68% 발표'}
+        self.assertFalse(duplicate(a, b))
+
+    def test_analysis_wait_survives_restart_and_refresh_without_extending(self):
+        for service, cls in ((self.kakao, Notifications), (self.telegram, TelegramNotifications)):
+            with self.subTest(channel=cls.__name__):
+                article = {**self.article, 'dedup_pending': True}
+                calls = []
+                clock = time.time()
+                with patch('notification_policy.time.time', return_value=clock):
+                    service.enqueue([article])
+                    self.drain(service, calls)
+                self.assertEqual(calls, [])
+                restarted = cls(self.directory)
+                with patch('notification_policy.time.time', return_value=clock + ANALYSIS_WAIT - 1):
+                    restarted.enqueue([article])
+                    self.drain(restarted, calls)
+                self.assertEqual(calls, [])
+                with patch('notification_policy.time.time', return_value=clock + ANALYSIS_WAIT):
+                    self.drain(restarted, calls)
+                self.assertEqual(len(calls), 1)
+
+    def test_completed_analysis_releases_early_and_does_not_block_other_stories(self):
+        for service in (self.kakao, self.telegram):
+            calls = []
+            waiting = {**self.article, 'dedup_pending': True}
+            ready = {**self.article, 'url': 'https://example.com/ready', 'title': '은행 결제 서비스 장애 발생'}
+            service.enqueue([waiting, ready])
+            self.drain(service, calls)
+            self.assertEqual(len(calls), 1)
+            service.enqueue([{**waiting, 'dedup_pending': False}])
+            self.drain(service, calls)
+            self.assertEqual(len(calls), 2)
+
     def setUp(self):
         for module in ('kakao_notifications', 'telegram_notifications'):
             schedule = patch(module + '.load_schedule', return_value={'enabled': False})

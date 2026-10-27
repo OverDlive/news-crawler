@@ -26,6 +26,89 @@ BODY = ('OK저축은행은 대출 신청 고객 250명의 개인정보 유출을
 
 
 class BodySharingTests(unittest.TestCase):
+    def test_send_rechecks_body_cache_without_waiting_for_grouped_snapshot(self):
+        """The old sent article can be outside the currently displayed 24h feed."""
+        with tempfile.TemporaryDirectory() as directory, closing(Store(Path(directory))) as store:
+            config = store.load_config()
+            config['sharing_schedule']['enabled'] = False
+            store.save_config(config)
+            now = time.time() + 1
+            a = Article('https://example.com/a', 'OK저축은행 고객 250명 개인정보 유출', 'A', now - 36 * 3600, '')
+            b = Article('https://example.com/b', '대출 신청자 정보 노출…외부 접속 경로 추적', 'B', now, '')
+            for item in (a, b):
+                store.ingest('뉴스', [item], now)
+                store.save_summary(item.url, Summary('본문 요약', 'body', '', '', BODY))
+            rows = store.list_articles(['뉴스'], hours=48, now=now, grouped=False)
+            first = next(r for r in rows if r['url'] == a.url)
+            second = next(r for r in rows if r['url'] == b.url)
+            services = (Notifications(Path(directory)), TelegramNotifications(Path(directory)))
+            services[0].save_user('검증', 'test-token')
+            with services[1].connect() as db:
+                db.execute("UPDATE settings SET enabled=1,chat_id=-100,registered=0,token='token'")
+            counts = {service: [] for service in services}
+
+            def drain(service):
+                if service is services[0]:
+                    service.deliver(sender=lambda *args: (counts[service].append(1) or ('sent', 'OK')))
+                else:
+                    with service.connect() as db:
+                        db.execute('UPDATE settings SET next_send=0')
+                    with patch('telegram_notifications.protect', return_value='token'), patch(
+                            'telegram_notifications.telegram_preview_url', return_value=b.url):
+                        service.deliver(request=lambda *args: (counts[service].append(1) or {'message_id': 1}))
+
+            for service in services:
+                service.enqueue([first])
+                drain(service)
+                service.enqueue([second])
+                self.assertEqual(len(counts[service]), 1)
+            store.save_comparisons(compare_bodies(rows, set(), threading.Event()))
+            visible = store.list_articles(['뉴스'], now=now)
+            self.assertEqual([r['url'] for r in visible], [b.url])
+            # No enqueue(grouped) call: the send-time guard must see the cache.
+            for service in services:
+                drain(service)
+                self.assertEqual(len(counts[service]), 1)
+                with service.connect() as db:
+                    self.assertEqual(db.execute('SELECT state FROM deliveries WHERE url=?', (b.url,)).fetchone()[0], 'skipped')
+
+    def test_store_marks_unfinished_analysis_and_clears_it_after_fallback_or_comparison(self):
+        with tempfile.TemporaryDirectory() as directory, closing(Store(Path(directory))) as store:
+            now = time.time()
+            a = Article('a', 'OK저축은행 고객 250명 개인정보 유출', 'A', now, '')
+            b = Article('b', '대출 신청자 정보 노출…외부 접속 경로 추적', 'B', now, '')
+            store.ingest('뉴스', [a], now)
+            self.assertTrue(store.list_articles(['뉴스'], now=now)[0]['dedup_pending'])
+            store.save_summary(a.url, Summary('RSS 요약', 'rss', '', ''))
+            self.assertFalse(store.list_articles(['뉴스'], now=now)[0]['dedup_pending'])
+            store.ingest('뉴스', [b], now)
+            for item in (a, b):
+                store.save_summary(item.url, Summary('본문 요약', 'body', '', '', BODY))
+            self.assertTrue(all(r['dedup_pending'] for r in store.list_articles(['뉴스'], now=now)))
+            rows = store.list_articles(['뉴스'], now=now, grouped=False)
+            store.save_comparisons(compare_bodies(rows, set(), threading.Event()))
+            grouped = store.list_articles(['뉴스'], now=now)
+            self.assertEqual(len(grouped), 1)
+            self.assertFalse(grouped[0]['dedup_pending'])
+
+    def test_stale_body_cache_and_explicit_conflicts_do_not_suppress(self):
+        from notification_policy import duplicate, stored_body_matches
+        with tempfile.TemporaryDirectory() as directory, closing(Store(Path(directory))) as store:
+            now = time.time()
+            for url in ('a', 'b'):
+                store.ingest('뉴스', [Article(url, 'OK저축은행 고객 정보 유출 확인', url, now, '')], now)
+                store.save_summary(url, Summary('요약', 'body', '', '', BODY))
+            rows = store.list_articles(['뉴스'], now=now, grouped=False)
+            store.save_comparisons(compare_bodies(rows, set(), threading.Event()))
+            self.assertGreaterEqual(stored_body_matches(directory, rows)[('a', 'b')], .82)
+            store.save_summary('b', Summary('수정', 'body', '', '', BODY.replace('250명', '500명')))
+            self.assertEqual(stored_body_matches(directory, rows), {})
+            rows = store.list_articles(['뉴스'], now=now, grouped=False)
+            store.save_comparisons(compare_bodies(rows, set(), threading.Event()))
+            evidence = stored_body_matches(directory, rows)
+            self.assertLess(evidence[('a', 'b')], 0)
+            self.assertFalse(duplicate(*rows, evidence))
+
     def test_grouped_event_rechecks_sent_story_before_another_url_is_shared(self):
         with tempfile.TemporaryDirectory() as directory, closing(Store(Path(directory))) as store:
             config = store.load_config()

@@ -316,12 +316,23 @@ class Store:
             articles = [article for article in articles if article['keywords']]
         if not grouped:
             return articles
-        from news_similarity import fingerprint
+        from news_similarity import fingerprint, clean_body, MIN_BODY, WINDOW
         hashes = {r['url']: fingerprint(r['body']) for r in articles if r['body']}
         scores = {(a, b): score for a, b, ah, bh, score in self.db.execute(
             'SELECT left_url, right_url, left_hash, right_hash, score FROM body_comparisons')
                   if hashes.get(a) == ah and hashes.get(b) == bh}
-        return deduplicate(articles, scores)
+        unfinished = {r['url'] for r in articles if r['url'] not in summaries}
+        comparable = [r for r in articles if len(clean_body(r['body'])) >= MIN_BODY]
+        for index, left in enumerate(comparable):
+            for right in comparable[index + 1:]:
+                if left['published'] - right['published'] > WINDOW:
+                    break
+                if tuple(sorted((left['url'], right['url']))) not in scores:
+                    unfinished.update((left['url'], right['url']))
+        grouped_rows = deduplicate(articles, scores)
+        for row in grouped_rows:
+            row['dedup_pending'] = any(member['url'] in unfinished for member in row['related_articles'])
+        return grouped_rows
 
     def comparison_cache(self):
         return {tuple(row) for row in self.db.execute(

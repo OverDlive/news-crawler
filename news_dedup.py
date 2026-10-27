@@ -1,5 +1,7 @@
 """Conservative RSS story matching; original articles stay in the database."""
 from functools import lru_cache
+from decimal import Decimal
+import html
 import re
 import unicodedata
 
@@ -11,22 +13,48 @@ _ALIASES = {re.sub(r'\s+', '', alias).casefold(): company.casefold()
             for company, aliases in INSTITUTIONS.items() for alias in [company, *aliases]}
 _COMPANY = re.compile('|'.join(re.escape(alias) for alias in
                              sorted(_ALIASES, key=len, reverse=True)))
-_LABEL = re.compile(r'\[(?:속보|단독|종합\d*|영상|포토|뉴스)[^\]]*\]|\((?:종합\d*|속보|단독|영상|포토)\)')
+_LABEL = re.compile(r'\[(?:속보|단독|종합\d*|영상|포토|뉴스|(?:\d{4}\s*)?국(?:정감사|감))[^\]]*\]|'
+                    r'\((?:종합\d*|속보|단독|영상|포토)\)')
 
 
 def _amount(match):
-    return str(int(match[1]) * 10000 + int(match[2] or 0) * 1000 + int(match[3] or 0))
+    return str(int(Decimal(match[1]) * 10000) + int(match[2] or 0) * 1000 + int(match[3] or 0))
 
 
 def normalize(value):
-    value = unicodedata.normalize('NFKC', value).casefold()
+    value = unicodedata.normalize('NFKC', html.unescape(value)).casefold()
+    value = re.sub(r'[\u200b-\u200d\ufeff]', '', value)
     value = _LABEL.sub('', value)
     value = re.sub(r'(?<=\d),(?=\d)', '', value)
     value = re.sub(r'\s+', '', value)
-    value = re.sub(r'(\d+)만(?:(\d+)천)?(\d+)?', _amount, value)
-    value = re.sub(r'(\d+)천', lambda m: str(int(m[1]) * 1000), value)
+    value = re.sub(r'(\d+(?:\.\d+)?)만(?:(\d+)천)?(\d+)?', _amount, value)
+    value = re.sub(r'(\d+(?:\.\d+)?)천', lambda m: str(int(Decimal(m[1]) * 1000)), value)
     value = re.sub(r'(?<=\d)여(?=명|건)', '', value)
     return _COMPANY.sub(lambda m: _ALIASES[m[0]], value)
+
+
+def headline(article):
+    """Remove a known publisher suffix without dropping substantive headline text."""
+    return _headline(article['title'], article.get('source', ''))
+
+
+@lru_cache(maxsize=8192)
+def _headline(title, source):
+    title = html.unescape(title).strip()
+    source = source.strip()
+    if source:
+        title = re.sub(r'\s+[-–—|]\s*' + re.escape(source) + r'\s*$', '', title, flags=re.I)
+    return title
+
+
+def title_key(article):
+    return _title_key(headline(article))
+
+
+@lru_cache(maxsize=8192)
+def _title_key(title):
+    value = re.sub(r'(?<=\d)\.(?=\d)', '_decimal_', normalize(title))
+    return re.sub(r'[^\w]', '', value)
 
 
 def _grams(value):
@@ -45,6 +73,7 @@ def _event_features(title):
         (r'외부노출|외부유출|노출|정보탈취', '유출'),
         (r'사이버공격|침해사고|해킹사고', '해킹'),
         (r'점검회의|대책회의|긴급회의', '점검회의'),
+        (r'비번', '비밀번호'),
     ):
         value = re.sub(pattern, replacement, value)
     kinds = frozenset(i for i, pattern in enumerate((
@@ -61,7 +90,7 @@ def _quantities(title):
     # A changed count is identified by the new total, not its historical value.
     title = re.sub(r'\d+(명|건)?(?:→|->|에서)(\d+)(명|건)',
                    lambda m: m[2] + m[3] if not m[1] or m[1] == m[3] else m[0], title)
-    values = re.findall(r'(\d+)(명|건|개사|곳|억원|만원|원|%)', title)
+    values = re.findall(r'(\d+(?:\.\d+)?)(명|건|개사|곳|억원|만원|원|%)', title)
     return frozenset((number, '기관' if unit in ('개사', '곳') else unit)
                      for number, unit in values)
 
@@ -90,12 +119,12 @@ def _features(title, description):
 def same_story(left, right):
     if abs(left['published'] - right['published']) > WINDOW:
         return False
-    a = _features(left['title'], left['description'])
-    b = _features(right['title'], right['description'])
+    left = {**left, 'title': headline(left)}
+    right = {**right, 'title': headline(right)}
+    a = _features(left['title'], left.get('description', ''))
+    b = _features(right['title'], right.get('description', ''))
     # Related group companies and differently sized incidents are separate stories.
     if a[5] and b[5] and a[5] != b[5]:
-        return False
-    if a[6] and b[6] and not a[6] & b[6]:
         return False
     x, y = _quantities(left['title']), _quantities(right['title'])
     for unit in {unit for _, unit in x} & {unit for _, unit in y}:
@@ -103,9 +132,21 @@ def same_story(left, right):
             return False
     if a[7] != b[7]:
         return False
-    if not a[5] and not b[5] and a[8] != b[8]:
+    # A cancelled opening or a different explicitly named year is an update,
+    # even when the original headline is contained in the new one.
+    changed = r'(?:공개|개소|개최|협약|행사|발표).{0,6}(?:취소|연기|철회)'
+    if bool(re.search(changed, normalize(left['title']))) != bool(re.search(changed, normalize(right['title']))):
         return False
-    if a[0] == b[0]:
+    years = [set(re.findall(r'(20\d{2})년', normalize(row['title']))) for row in (left, right)]
+    if all(years) and years[0].isdisjoint(years[1]):
+        return False
+    # Formatting can change the first word, even when the full title is identical.
+    if a[0] and a[0] == b[0]:
+        return True
+    contained = min(len(a[0]), len(b[0])) >= 18 and (a[0] in b[0] or b[0] in a[0])
+    if not a[5] and not b[5] and a[8] != b[8] and not contained:
+        return False
+    if contained:
         return True
     if min(len(a[2]), len(b[2])) < 12:
         return False

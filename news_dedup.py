@@ -116,17 +116,23 @@ def _features(title, description):
             bool(re.search(r'(?:노출|유출|해킹|발생).{0,6}(?:없|않|아니)', core)), normalize(lead))
 
 
+@lru_cache(maxsize=8192)
+def _title_facts(title):
+    text = normalize(title)
+    changed = bool(re.search(r'(?:공개|개소|개최|협약|행사|발표).{0,6}(?:취소|연기|철회)', text))
+    return changed, frozenset(re.findall(r'(20\d{2})년', text))
+
+
 def same_story(left, right):
     if abs(left['published'] - right['published']) > WINDOW:
         return False
-    left = {**left, 'title': headline(left)}
-    right = {**right, 'title': headline(right)}
-    a = _features(left['title'], left.get('description', ''))
-    b = _features(right['title'], right.get('description', ''))
+    left_title, right_title = headline(left), headline(right)
+    a = _features(left_title, left.get('description', ''))
+    b = _features(right_title, right.get('description', ''))
     # Related group companies and differently sized incidents are separate stories.
     if a[5] and b[5] and a[5] != b[5]:
         return False
-    x, y = _quantities(left['title']), _quantities(right['title'])
+    x, y = _quantities(left_title), _quantities(right_title)
     for unit in {unit for _, unit in x} & {unit for _, unit in y}:
         if {n for n, u in x if u == unit}.isdisjoint(n for n, u in y if u == unit):
             return False
@@ -134,11 +140,11 @@ def same_story(left, right):
         return False
     # A cancelled opening or a different explicitly named year is an update,
     # even when the original headline is contained in the new one.
-    changed = r'(?:공개|개소|개최|협약|행사|발표).{0,6}(?:취소|연기|철회)'
-    if bool(re.search(changed, normalize(left['title']))) != bool(re.search(changed, normalize(right['title']))):
+    changed_a, years_a = _title_facts(left_title)
+    changed_b, years_b = _title_facts(right_title)
+    if changed_a != changed_b:
         return False
-    years = [set(re.findall(r'(20\d{2})년', normalize(row['title']))) for row in (left, right)]
-    if all(years) and years[0].isdisjoint(years[1]):
+    if years_a and years_b and years_a.isdisjoint(years_b):
         return False
     # Formatting can change the first word, even when the full title is identical.
     if a[0] and a[0] == b[0]:
@@ -153,15 +159,15 @@ def same_story(left, right):
     title_score = _dice(a[1], b[1])
     core_score = _dice(a[3], b[3])
     description_score = _dice(a[4], b[4]) if min(len(a[4]), len(b[4])) >= 30 else 0
-    ea, ka = _event_features(left['title'])
-    eb, kb = _event_features(right['title'])
+    ea, ka = _event_features(left_title)
+    eb, kb = _event_features(right_title)
     # Entity + event + wording evidence. A shared institution alone is not an issue.
     event_match = bool(a[5] and a[5] == b[5] and ka and ka == kb and (
         _dice(ea, eb) >= .62
         or (_dice(ea, eb) >= .46 and a[6] & b[6] and description_score >= .28)
         # Matching structured facts survive very different publishers' headlines.
         or (0 in ka and x & y and _dice(ea, eb) >= .40)
-        or (6 in ka and _delays(left['title']) & _delays(right['title'])
+        or (6 in ka and _delays(left_title) & _delays(right_title)
             and _dice(ea, eb) >= .32)))
     return (title_score >= .82 or core_score >= .78
             or event_match

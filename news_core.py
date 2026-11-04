@@ -204,6 +204,7 @@ class Store:
                 keyword TEXT NOT NULL, PRIMARY KEY(url, keyword)
             );
             CREATE TABLE IF NOT EXISTS checks (keyword TEXT PRIMARY KEY, succeeded REAL NOT NULL);
+            CREATE INDEX IF NOT EXISTS matches_keyword ON matches(keyword, url);
             CREATE TABLE IF NOT EXISTS summaries (
                 url TEXT PRIMARY KEY REFERENCES articles(url) ON DELETE CASCADE,
                 summary TEXT NOT NULL, basis TEXT NOT NULL, note TEXT NOT NULL,
@@ -219,6 +220,7 @@ class Store:
                 left_hash TEXT NOT NULL, right_hash TEXT NOT NULL, score REAL NOT NULL,
                 PRIMARY KEY(left_url, right_url)
             );
+            CREATE INDEX IF NOT EXISTS comparisons_right ON body_comparisons(right_url);
         """)
 
     def load_config(self):
@@ -349,7 +351,8 @@ class Store:
         unfinished = {r['url'] for r in articles if r['url'] not in summaries}
         comparable = [r for r in articles if len(clean_body(r['body'])) >= MIN_BODY]
         for index, left in enumerate(comparable):
-            for right in comparable[index + 1:]:
+            for other_index in range(index + 1, len(comparable)):
+                right = comparable[other_index]
                 if left['published'] - right['published'] > WINDOW:
                     break
                 if tuple(sorted((left['url'], right['url']))) not in scores:

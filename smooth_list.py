@@ -18,6 +18,8 @@ class SmoothTermList(tk.Frame):
         self.row_height = self.font.metrics('linespace') + 18
         self.header_height = self.row_height + 2
         self.rows = {}
+        self._items = ()
+        self._painted = None
         self.chosen = ()
         self.focused = ''
         self.headings = {'#0': '검색어', 'state': '사용 상태'}
@@ -76,6 +78,7 @@ class SmoothTermList(tk.Frame):
     def _move(self, pixels):
         total = max(1, len(self.rows)*self.row_height)
         self.viewport.yview_moveto(max(0, min(self._limit(), pixels))/total)
+        self._paint_rows()
 
     def _scroll(self, pixels):
         if self.draw_timer is not None:
@@ -212,8 +215,28 @@ class SmoothTermList(tk.Frame):
         self.header.delete('all')
         self.header.create_text(12, self.header_height/2, text=self.headings['#0'], anchor='w', font=self.font, fill=c['muted'])
         self.header.create_text(width-self.state_width/2, self.header_height/2, text=self.headings['state'], font=self.font, fill=c['muted'])
+        self._items = tuple(self.rows)
+        self._painted = None
+        self.viewport.configure(scrollregion=(0, 0, width, len(self.rows)*self.row_height))
+        if self.pending_fraction is not None:
+            fraction, self.pending_fraction = self.pending_fraction, None
+            self.yview_moveto(fraction)
+        self._paint_rows()
+
+    def _paint_rows(self):
+        """Keep only the viewport plus one row of overscan on the canvas."""
+        width = max(1, self.viewport.winfo_width())
+        first = max(0, int(self._offset() // self.row_height) - 1)
+        last = min(len(self._items), int((self._offset() + self.viewport.winfo_height()) // self.row_height) + 2)
+        signature = (first, last, width, self.chosen)
+        if signature == self._painted:
+            return
+        self._painted = signature
+        c = self.colors
         self.viewport.delete('all')
-        for index, (iid, row) in enumerate(self.rows.items()):
+        for index in range(first, last):
+            iid = self._items[index]
+            row = self.rows[iid]
             top = index*self.row_height
             chosen = iid in self.chosen
             bg = c['hover'] if chosen else c['panel'] if index%2 == 0 else c['input']
@@ -234,7 +257,3 @@ class SmoothTermList(tk.Frame):
             value = row['values'][0] if row['values'] else ''
             self.viewport.create_text(width-self.state_width/2, top+self.row_height/2, text=value,
                                       font=self.font, fill=c['accent'] if value == 'ON' else c['muted'])
-        self.viewport.configure(scrollregion=(0, 0, width, len(self.rows)*self.row_height))
-        if self.pending_fraction is not None:
-            fraction, self.pending_fraction = self.pending_fraction, None
-            self.yview_moveto(fraction)

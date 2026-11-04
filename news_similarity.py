@@ -1,7 +1,10 @@
 """Body-first story evidence, calculated only by the background worker."""
 from functools import lru_cache
+from collections import Counter, OrderedDict
 import hashlib
+import math
 import re
+import threading
 
 from news_dedup import WINDOW, _features, _quantities, normalize
 
@@ -67,20 +70,60 @@ def eligible(left, right):
     return True
 
 
-@lru_cache(maxsize=128)
-def _shingles(text):
-    return frozenset(text[i:i + 3] for i in range(len(text) - 2))
+_FEATURE_LIMIT = 120000
+_feature_cache = OrderedDict()
+_feature_size = 0
+_feature_lock = threading.Lock()
+_UNIQUE_IDF_SQUARED = (1 + math.log(3 / 2)) ** 2
+
+
+def _body_features(text):
+    """Reuse document features, bounded by actual vocabulary size, not body count."""
+    global _feature_size
+    with _feature_lock:
+        if text in _feature_cache:
+            _feature_cache.move_to_end(text)
+            return _feature_cache[text]
+    # Match TfidfVectorizer's char analyzer, lowercase and whitespace handling.
+    normalized = re.sub(r'\s\s+', ' ', text.lower())
+    counts = Counter(normalized[i:i + n] for n in (3, 4, 5)
+                     for i in range(len(normalized) - n + 1))
+    weights = {gram: 1 + math.log(count) for gram, count in counts.items()}
+    shingles = frozenset(text[i:i + 3] for i in range(len(text) - 2))
+    result = (weights, sum(value * value for value in weights.values()), shingles)
+    cost = len(weights) + len(shingles)
+    with _feature_lock:
+        if text in _feature_cache:
+            return _feature_cache[text]
+        if cost <= _FEATURE_LIMIT:
+            while _feature_cache and (_feature_size + cost > _FEATURE_LIMIT or len(_feature_cache) >= 64):
+                old = _feature_cache.popitem(last=False)[1]
+                _feature_size -= len(old[0]) + len(old[2])
+            _feature_cache[text] = result
+            _feature_size += cost
+    return result
 
 
 def body_score(left, right):
-    import numpy as np
-    from sklearn.feature_extraction.text import TfidfVectorizer
     if min(len(left), len(right)) < MIN_BODY:
         return 0.0
-    vectors = TfidfVectorizer(analyzer='char', ngram_range=(3, 5),
-                             sublinear_tf=True, dtype=np.float32).fit_transform([left, right])
-    cosine = float(vectors[0].multiply(vectors[1]).sum())
-    a, b = _shingles(left), _shingles(right)
+    x, xx, a = _body_features(left)
+    y, yy, b = _body_features(right)
+    if len(x) > len(y):
+        x, y, xx, yy = y, x, yy, xx
+    # In a two-document corpus, shared grams have IDF 1; unique grams have
+    # IDF 1 + log(3/2). This is the same smoothed, sublinear, L2 TF-IDF cosine
+    # without rebuilding and sorting a sparse matrix for every pair.
+    dot = common_x = common_y = 0.0
+    for gram, weight in x.items():
+        other = y.get(gram)
+        if other is not None:
+            dot += weight * other
+            common_x += weight * weight
+            common_y += other * other
+    norm_x = common_x + _UNIQUE_IDF_SQUARED * max(0, xx - common_x)
+    norm_y = common_y + _UNIQUE_IDF_SQUARED * max(0, yy - common_y)
+    cosine = min(1.0, dot / math.sqrt(norm_x * norm_y)) if norm_x and norm_y else 0.0
     common = len(a & b)
     coverage = common / min(len(a), len(b))
     balance = min(len(a), len(b)) / max(len(a), len(b))
@@ -96,14 +139,20 @@ def compare_bodies(rows, cached, stopped):
     rows = sorted((r for r in rows if len(clean_body(r.get('body', ''))) >= MIN_BODY),
                   key=lambda r: r['published'], reverse=True)
     results = []
+    hashes = {}
+    for row in rows:
+        if stopped.is_set():
+            return results
+        hashes[row['url']] = fingerprint(row['body'])
     for index, left in enumerate(rows):
-        for right in rows[index + 1:]:
+        for other_index in range(index + 1, len(rows)):
+            right = rows[other_index]
             if stopped.is_set():
                 return results
             if left['published'] - right['published'] > WINDOW:
                 break
             a, b = sorted((left, right), key=lambda r: r['url'])
-            key = (a['url'], b['url'], fingerprint(a['body']), fingerprint(b['body']))
+            key = (a['url'], b['url'], hashes[a['url']], hashes[b['url']])
             if key in cached:
                 continue
             score = body_score(clean_body(a['body']), clean_body(b['body'])) if eligible(a, b) else CONFLICT

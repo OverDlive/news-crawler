@@ -92,6 +92,7 @@ class NewsMonitor:
         self.collector = NewsCollector(fallback=True)
         self.summarizer = ArticleSummarizer()
         self.summary_busy = False
+        self.summary_next = 0
         self.grouping_busy = False
         self.grouping_again = False
         self.grouping_signature = None
@@ -134,7 +135,11 @@ class NewsMonitor:
         self.build()
         if demo:
             self.seed_demo()
-        self.reload(force=True)
+        if demo:
+            self.reload(force=True)
+        else:
+            self.reload(force=True, background=True)
+            self.render()
         logging.info("News monitor started; %d active keywords, interval=%d minutes, demo=%s",
                      len(self.active_keywords()), self.config['interval_minutes'], self.demo)
         self.tick()
@@ -450,7 +455,16 @@ class NewsMonitor:
                     store.close()
                 results = compare_bodies(rows, cached, stopped)
                 if not stopped.is_set():
-                    events.put(('grouped', results, signature, revision))
+                    # Bulk comparison commits must not block Tk on slower disks.
+                    writer = Store(directory)
+                    try:
+                        for offset in range(0, len(results), 128):
+                            if stopped.is_set():
+                                return
+                            writer.save_comparisons(results[offset:offset + 128])
+                    finally:
+                        writer.close()
+                    events.put(('grouped_saved', signature, revision))
             except Exception:
                 logging.exception('Article body comparison failed')
                 events.put(('grouping_failed',))
@@ -507,6 +521,8 @@ class NewsMonitor:
             surface.pack(fill="both", expand=True)
             if not self.active_keywords():
                 title, detail = "관심 키워드를 등록해 주세요", "상단의 ‘키워드 / 설정’에서 키워드를 추가하면 자동 수집합니다."
+            elif self.view_pending:
+                title, detail = '저장된 뉴스를 불러오는 중입니다', '잠시 후 기사 목록이 표시됩니다. 설정과 창 조작은 계속 사용할 수 있습니다.'
             elif self.collection_errors:
                 title = "뉴스 수집 서버에 연결하지 못했습니다"
                 detail = "현재 조건에 맞는 뉴스가 없는 것으로 확인된 상태가 아닙니다. 연결 복구 후 자동으로 다시 확인합니다."
@@ -776,6 +792,10 @@ class NewsMonitor:
                 if len(event) > 2:
                     self.grouping_signature = event[2]
                 refresh = notify = True
+            elif event[0] == 'grouped_saved':
+                self.grouping_busy = False
+                self.grouping_signature = event[1] if event[2] == self.revision else None
+                refresh = notify = True
             elif event[0] == 'notifications_done':
                 self.notification_enqueue_busy = False
                 if event[2]:
@@ -801,7 +821,10 @@ class NewsMonitor:
                 repaint = True
             elif event[0] == 'summary_done':
                 self.summary_busy = False
-                refresh = notify = True
+                changed = event[1] if len(event) > 1 else True
+                self.summary_next = time.monotonic() + (0 if changed else 5)
+                if changed:
+                    refresh = notify = True
             elif event[0] == "partial":
                 _, revision, keyword, articles = event
                 if revision != self.revision:
@@ -892,26 +915,32 @@ class NewsMonitor:
             raise
 
     def start_summaries(self):
-        if self.demo or self.summary_busy or self.closed or self.monitoring_paused:
-            return
-        rows = self.store.summary_candidates(self.active_keywords(), self.config['hours'])
-        if not rows:
+        if (self.demo or self.summary_busy or self.closed or self.monitoring_paused
+                or time.monotonic() < self.summary_next):
             return
         self.summary_busy = True
         summarizer, events, stopped = self.summarizer, self.events, self.summary_stop
+        directory, keywords, hours = self.store.directory, self.active_keywords(), self.config['hours']
 
         def worker():
+            changed = False
             try:
+                reader = Store(directory, read_only=True)
+                try:
+                    rows = reader.summary_candidates(keywords, hours)
+                finally:
+                    reader.close()
                 for row in rows:
                     if stopped.is_set() or self.monitoring_paused:
                         break
                     result = summarizer.create(row)
                     if not stopped.is_set():
                         events.put(('summary', row['url'], result))
+                        changed = True
             except Exception:
                 logging.exception('Article summary worker failed')
             finally:
-                events.put(('summary_done',))
+                events.put(('summary_done', changed))
 
         try:
             threading.Thread(target=worker, daemon=True, name='news-summary').start()
@@ -1624,7 +1653,7 @@ def main():
             logging.exception('Bounded HTTP process smoke test failed')
             app.close()
             return 1
-        # Exercise compiled NumPy/SciPy dependencies in the packaged executable.
+        # Exercise the dependency-free body scorer in the packaged executable.
         try:
             from news_similarity import body_score, clean_body
             sample = clean_body('한국전력이 개인정보 보호를 위해 직원 보안 교육과 외부 접속 기록 점검을 실시한다 ' * 20)

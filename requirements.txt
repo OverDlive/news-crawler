@@ -1,1 +1,1 @@
-scikit-learn>=1.5,<2
+# Runtime uses only the Python standard library (including Tcl/Tk).

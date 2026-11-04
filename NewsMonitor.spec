@@ -1,7 +1,6 @@
 # Build with: python -m PyInstaller --clean --noconfirm NewsMonitor.spec
 from pathlib import Path
 import sys
-from PyInstaller.utils.hooks import collect_submodules
 
 # The bundled desktop Python distributes Tcl/Tk scripts as ZIP files.
 from tk_runtime import prepare_tk
@@ -15,11 +14,9 @@ if not (Path(sys.base_prefix) / 'tcl' / 'tcl8.6').is_dir():
             extra_data.append((os.environ[variable], destination))
 
 a = Analysis(['app.py'], pathex=[SPECPATH], binaries=[], datas=extra_data,
-             hiddenimports=['kakao_editor', 'telegram_editor']
-             + collect_submodules('scipy._external.array_api_compat.numpy')
-             + collect_submodules('sklearn.externals.array_api_compat.numpy'), hookspath=[],
+             hiddenimports=['kakao_editor', 'telegram_editor'], hookspath=[],
              hooksconfig={}, runtime_hooks=[],
-             excludes=['pandas', 'matplotlib', 'torch', 'tensorflow', 'cupy',
+             excludes=['numpy', 'scipy', 'sklearn', 'pandas', 'matplotlib', 'torch', 'tensorflow', 'cupy',
                        'dask', 'IPython', 'pytest'], noarchive=False)
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name='NewsMonitor',

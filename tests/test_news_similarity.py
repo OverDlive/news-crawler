@@ -23,6 +23,48 @@ def article(url, title, body=BODY, published=1800000000):
 
 
 class BodyMatchingTests(unittest.TestCase):
+    def test_pair_tfidf_matches_independent_dense_formula(self):
+        from collections import Counter
+        import math
+        import random
+        import re
+        rng = random.Random(42)
+        for index in range(30):
+            left = ''.join(rng.choices('가나다라마바사아자차ABC', k=180))
+            right = left[:index * 6] + ''.join(rng.choices('가나다라마XYZ', k=180 - index * 6))
+            counts = [Counter(text[i:i+n] for n in (3, 4, 5) for i in range(len(text)-n+1))
+                      for text in (re.sub(r'\s\s+', ' ', left.lower()), right.lower())]
+            vocabulary = set(counts[0]) | set(counts[1])
+            vectors = [[(1 + math.log(c[g])) * (1 + math.log(3 / (1 + sum(g in d for d in counts))))
+                        if g in c else 0 for g in vocabulary] for c in counts]
+            x, y = vectors
+            expected = sum(a*b for a, b in zip(x, y)) / math.sqrt(sum(a*a for a in x) * sum(b*b for b in y))
+            shingles = [set(text[i:i+3] for i in range(len(text)-2)) for text in (left, right)]
+            common = len(shingles[0] & shingles[1])
+            coverage = common / min(map(len, shingles))
+            if coverage >= .9 and min(map(len, shingles)) / max(map(len, shingles)) >= .55 and common >= 150:
+                expected = max(expected, coverage)
+            self.assertAlmostEqual(body_score(left, right), expected, places=11)
+
+    def test_feature_cache_stays_within_vocabulary_budget(self):
+        from collections import OrderedDict
+        import news_similarity as similarity
+        with patch.object(similarity, '_FEATURE_LIMIT', 5000), \
+                patch.object(similarity, '_feature_cache', OrderedDict()), \
+                patch.object(similarity, '_feature_size', 0):
+            for i in range(80):
+                similarity.body_score((str(i) + BODY) * 3, BODY * 3)
+                self.assertLessEqual(similarity._feature_size, 5000)
+                self.assertLessEqual(len(similarity._feature_cache), 64)
+            self.assertTrue(similarity._feature_cache)
+
+    def test_comparison_fingerprints_each_article_once(self):
+        rows = [article(str(i), '한국전력 개인정보 유출') for i in range(12)]
+        with patch('news_similarity.fingerprint', wraps=fingerprint) as hashed:
+            results = compare_bodies(rows, set(), threading.Event())
+        self.assertEqual(len(results), 66)
+        self.assertEqual(hashed.call_count, len(rows))
+
     def test_different_headlines_same_body_merge_and_members_survive(self):
         rows = [article('a', '한국전력 직원 정보 유출 사고 조사'),
                 article('b', '한전 보안 담당 부서 외부 접속 경로 추적',

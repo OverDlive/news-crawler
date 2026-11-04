@@ -18,6 +18,98 @@ from ui_theme import GAP, RADIUS, RoundedPanel
 
 
 class GuiTests(unittest.TestCase):
+    def test_startup_view_does_not_wait_for_database_query(self):
+        from news_core import Store
+        entered, release = threading.Event(), threading.Event()
+        window = tk.Toplevel(self.root)
+        app = None
+        def blocked(*args, **kwargs):
+            entered.set()
+            release.wait(3)
+            return []
+        with patch.object(Store, 'list_articles', side_effect=blocked), \
+                patch.object(NewsMonitor, 'tick'), patch.object(NewsMonitor, 'start_grouping'):
+            try:
+                app = NewsMonitor(window, Path(self.directory.name) / 'startup', demo=False)
+                self.assertTrue(entered.wait(2))
+                self.assertTrue(app.view_pending)
+                window.update_idletasks()
+                self.assertTrue(app.fetch_button.winfo_exists())
+            finally:
+                release.set()
+                if app is not None:
+                    app.close()
+                    app.view_loader.thread.join(timeout=3)
+                    self.assertFalse(app.view_loader.thread.is_alive())
+                elif window.winfo_exists():
+                    window.destroy()
+
+    def test_body_comparison_commits_off_ui_thread(self):
+        from news_core import Store
+        entered, release = threading.Event(), threading.Event()
+        threads = []
+        def save(*args):
+            threads.append(threading.get_ident())
+            entered.set()
+            release.wait(3)
+        self.app.demo = False
+        with patch('news_similarity.compare_bodies', return_value=[('a', 'b', 'ha', 'hb', .9)]), \
+                patch.object(Store, 'save_comparisons', side_effect=save):
+            try:
+                self.app.start_grouping()
+                self.assertTrue(entered.wait(2))
+                self.assertNotEqual(threads[0], threading.get_ident())
+                self.root.update_idletasks()
+            finally:
+                release.set()
+            deadline = time.monotonic() + 3
+            while self.app.grouping_busy and time.monotonic() < deadline:
+                time.sleep(.005)
+                self.app.process_events()
+            self.assertFalse(self.app.grouping_busy)
+
+    def test_large_term_list_only_paints_visible_rows(self):
+        from smooth_list import SmoothTermList
+        widget = SmoothTermList(self.root, colors=self.app.colors, height=4)
+        widget.place(x=0, y=0, width=420, height=220)
+        for index in range(3000):
+            widget.insert('', 'end', iid=str(index), text=f'검색어 {index}', values=('ON',))
+        self.root.update_idletasks()
+        self.assertLess(len(widget.viewport.find_all()), 40)
+        widget.yview_moveto(1)
+        texts = [widget.viewport.itemcget(item, 'text') for item in widget.viewport.find_all()
+                 if widget.viewport.type(item) == 'text']
+        self.assertIn('검색어 2999', texts)
+        self.assertLess(len(widget.viewport.find_all()), 40)
+        widget.destroy()
+
+    def test_summary_candidate_query_is_off_ui_thread_and_idle_is_throttled(self):
+        from news_core import Store
+        started, release = threading.Event(), threading.Event()
+        threads = []
+        def query(*args, **kwargs):
+            threads.append(threading.get_ident())
+            started.set()
+            release.wait(3)
+            return []
+        self.app.demo = False
+        with patch.object(Store, 'summary_candidates', side_effect=query):
+            try:
+                self.app.start_summaries()
+                self.assertTrue(started.wait(2))
+                self.assertNotEqual(threads[0], threading.get_ident())
+                self.root.update_idletasks()
+            finally:
+                release.set()
+            deadline = time.monotonic() + 3
+            while self.app.summary_busy and time.monotonic() < deadline:
+                time.sleep(.005)
+                self.app.process_events()
+            self.assertFalse(self.app.summary_busy)
+            self.app.start_summaries()
+            self.assertEqual(len(threads), 1)
+            self.assertGreater(self.app.summary_next, time.monotonic())
+
     def test_pause_blocks_collection_notifications_and_rotation(self):
         self.app.pause_button.invoke()
         self.app.demo = False
@@ -1074,6 +1166,16 @@ class GuiTests(unittest.TestCase):
         self.root.after(milliseconds, lambda: done.set(True))
         self.root.wait_variable(done)
         self.root.update()
+        # On a busy/slower desktop the window-manager Configure event can
+        # arrive late and only then arm the resize debounce. Wait for that
+        # real layout completion instead of assuming 250 ms always suffices.
+        deadline = time.monotonic() + 2
+        while self.app.refresh_id is not None and time.monotonic() < deadline:
+            done.set(False)
+            self.root.after(25, lambda: done.set(True))
+            self.root.wait_variable(done)
+            self.root.update()
+        self.assertIsNone(self.app.refresh_id, 'Resize did not settle within two seconds')
 
     def test_resize_preserves_cards_and_updates_compact_layout(self):
         self.app.config["page_size"] = 3

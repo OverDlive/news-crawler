@@ -30,12 +30,14 @@ def verify(executable):
                    if a.opname == 'LOAD_CONST' and b.opname == 'STORE_NAME' and b.argval == 'VERSION')
     assert version == VERSION, (version, VERSION)
     matched = []
-    for name in ('app', 'bounded_http', 'news_core', 'news_views', 'group_editor',
-                 'app_storage', 'app_updates', 'smooth_list', 'ui_tasks', 'ui_theme', 'version'):
+    for name in ('app', 'bounded_http', 'news_core', 'news_views', 'news_similarity', 'news_dedup', 'group_editor',
+                 'app_storage', 'app_updates', 'smooth_list', 'ui_tasks', 'ui_theme',
+                 'tk_runtime', 'windows_ime', 'version'):
         embedded = marshal.loads(archive.extract(name)) if name == 'app' else pyz.extract(name)
         source = compile((ROOT / f'{name}.py').read_bytes(), f'{name}.py', 'exec', dont_inherit=True)
         assert shape(source) == shape(embedded), f'EXE has stale code: {name}'
         matched.append(name)
+    assert not any(name.split('.')[0] in ('numpy', 'scipy', 'sklearn') for name in pyz.toc), 'Unexpected heavy runtime dependency'
     with executable.open('rb') as stream:
         checksum = hashlib.file_digest(stream, 'sha256').hexdigest()
     assert executable.with_suffix('.exe.sha256').read_text(encoding='utf-8').split()[0] == checksum

@@ -45,4 +45,7 @@ def create_root():
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
             "NewsMonitor.Desktop")
     import tkinter
-    return tkinter.Tk()
+    root = tkinter.Tk()
+    from windows_ime import install
+    install(root)
+    return root

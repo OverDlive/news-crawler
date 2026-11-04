@@ -241,7 +241,7 @@ class SearchRule:
         text = title if self.scope == "title" else title + " " + description
         text = normalize(text)
         if hasattr(self, 'company'):
-            matched = bool(self.company_matches(text)) and any(contains_term(term, text) for term in self.terms) and not any(
+            matched = bool(self.company_matches(text)) and bool(self.matching_terms(text)) and not any(
                 contains_term(term, text) for term in self.exclusions)
             if matched:
                 from incident_filter import SECURITY_CATEGORIES, incident_relevant
@@ -249,6 +249,11 @@ class SearchRule:
                     return incident_relevant(title, description if self.scope != 'title' else '')
             return matched
         return evaluate(self.tree, text)
+
+    def matching_terms(self, text):
+        from incident_filter import SECURITY_CATEGORIES, security_term_matches
+        matcher = security_term_matches if self.category in SECURITY_CATEGORIES else contains_term
+        return [term for term in self.terms if matcher(term, text)]
 
     def company_matches(self, text):
         from security_profiles import COMPANIES
@@ -281,7 +286,7 @@ class SearchRule:
             return ''
         text = normalize(title if self.scope == 'title' else title + ' ' + description)
         aliases = self.company_matches(text)
-        terms = [term for term in self.terms if contains_term(term, text)]
+        terms = self.matching_terms(text)
         return '기관: ' + ', '.join(aliases) + ' / 검색어: ' + ', '.join(terms) if aliases and terms else ''
 
     def accepts(self, article):

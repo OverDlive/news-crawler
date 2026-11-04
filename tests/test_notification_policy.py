@@ -262,13 +262,17 @@ class StoryDeliveryTests(unittest.TestCase):
 
     def test_legacy_low_importance_pending_is_filtered_before_send(self):
         for service, owner, value in ((self.kakao, 'recipient', 1), (self.telegram, 'chat_id', -100)):
-            low = {**self.article, 'title': '지역 문화 행사 개최'}
-            with service.connect() as db:
-                db.execute(f'INSERT INTO deliveries({owner},url,article) VALUES(?,?,?)',
-                           (value, low['url'], json.dumps(low)))
-            calls = []
-            self.drain(service, calls)
-            self.assertEqual(calls, [])
-            with service.connect() as db:
-                self.assertEqual(db.execute('SELECT state FROM deliveries').fetchone()[0], 'filtered')
+            for index, title in enumerate(('지역 문화 행사 개최',
+                                          "[보령소식]명천2차APT '도 그린홈 으뜸아파트' 현판 제막식 등")):
+                low = {**self.article, 'url': f'https://example.com/low-{index}',
+                       'title': title, 'description': '주택관리공단 아파트 현판식'}
+                with service.connect() as db:
+                    db.execute(f'INSERT INTO deliveries({owner},url,article) VALUES(?,?,?)',
+                               (value, low['url'], json.dumps(low)))
+                calls = []
+                self.drain(service, calls)
+                self.assertEqual(calls, [])
+                with service.connect() as db:
+                    state = db.execute('SELECT state FROM deliveries WHERE url=?', (low['url'],)).fetchone()[0]
+                    self.assertEqual(state, 'filtered')
 

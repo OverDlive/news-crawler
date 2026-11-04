@@ -6,6 +6,44 @@ from search_rules import contains_term, normalize
 
 SECURITY_CATEGORIES = frozenset(('공격 유형', '개인정보위·정부 대응'))
 
+# APT also means apartment. Numbered threat-group names are recognized only
+# by security profiles; ordinary literal searches keep their word boundaries.
+APT_PATTERN = r'(?<![a-z0-9_])apt(?:[ -]?\d{1,3})?(?![a-z0-9_])'
+APT_TOKEN = re.compile(APT_PATTERN)
+APT_ATTACK = re.compile(r'공격|침해')
+APT_INTRUSION = re.compile(r'침투|침입|감염|장악|탈취')
+APT_DIGITAL_TARGET = re.compile(r'전산망|내부망|통신망|시스템|서버|네트워크|계정|데이터')
+APT_GROUP_ACTION = re.compile(r'소행|표적.{0,12}피해')
+APT_DIRECT_INTRUSION = re.compile(APT_PATTERN + r'\s*(?:(?:조직|그룹)(?:의)?\s*)?침투')
+APT_PREVENTION = re.compile(
+    APT_PATTERN + r'(?:\s*(?:기반\s*)?공격)?\s*(?:예방|대비|방지|교육|훈련|우려|위험|가능성)'
+)
+NEGATED_APT = re.compile(
+    APT_PATTERN + r'(?:\s*공격)?(?:과는|과|와는|와|은|는|이|가)?\s*(?:무관|아니|없|아닌)'
+)
+
+
+def security_term_matches(term, text):
+    """Match a topic against normalized text; relevance is checked separately."""
+    return bool(APT_TOKEN.search(text)) if normalize(term) == 'apt' else contains_term(term, text)
+
+
+def apt_evidence(text):
+    """Require nearby attack context, without excluding housing-related leaks."""
+    text = NEGATED_APT.sub('', APT_PREVENTION.sub('', text))
+    for sentence in re.split(r'[.!?。！？;\n]+', text):
+        for match in APT_TOKEN.finditer(sentence):
+            # Never borrow context from another sentence or a distant topic.
+            context = sentence[max(0, match.start() - 60):match.end() + 60]
+            if APT_ATTACK.search(context) or APT_DIRECT_INTRUSION.search(context):
+                return True
+            if APT_DIGITAL_TARGET.search(context) and APT_INTRUSION.search(context):
+                return True
+            if any(char.isdigit() for char in match.group()) and APT_GROUP_ACTION.search(context):
+                return True
+    return False
+
+
 # These headlines describe hiring, promotion or legal proceedings, even when
 # their RSS snippets mention a historical breach or the security industry.
 OFF_TOPIC = re.compile(
@@ -27,7 +65,7 @@ CYBER_TERMS = (
     '해킹', '랜섬웨어', '악성코드', '사이버공격', '사이버 공격',
     '사이버테러', '침해사고', '침해 사고', '정보탈취', '정보 탈취',
     '계정탈취', '계정 탈취', '악성메일', '악성 메일', 'DDoS', '디도스',
-    'APT', '피싱', '스미싱', '무단 침입', '불법 접속', '무단 접근',
+    '피싱', '스미싱', '무단 침입', '불법 접속', '무단 접근',
 )
 LEAK = re.compile(r'유출|노출|탈취|유출신고|유출통지|털렸|털린')
 PERSONAL_DATA = re.compile(
@@ -73,10 +111,14 @@ def incident_relevant(title, description=''):
         affirmative = NEGATED_CYBER.sub('', text)
         cyber = any(contains_term(term, affirmative) for term in CYBER_TERMS)
         leak = leak_evidence(text)
-        return cyber or leak
+        return cyber or leak or apt_evidence(affirmative)
 
     if evidence(title):
         return True
+    # An APT denial/prevention headline must not borrow an attack from its
+    # snippet, but an independently confirmed leak or other attack stays valid.
+    if NEGATED_APT.search(title) or APT_PREVENTION.search(title):
+        return False
     # A vague headline needs evidence in its own RSS description. Do not
     # promote political document leaks or general policy/industry stories
     # based on incidental background mentions of attacks.

@@ -33,22 +33,25 @@ jobs:
         run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
       - name: Test
         run: python scripts/run_tests.py
+      - name: Install installer compiler
+        run: choco install innosetup --yes --no-progress
       - name: Build EXE and checksum
         env:
           RELEASE_TAG: ${{ github.event.inputs.version || github.ref_name }}
           RELEASE_REPO: ${{ github.repository }}
-        run: python scripts/build_release.py --version "$env:RELEASE_TAG" --repository "$env:RELEASE_REPO"
+        run: python scripts/build_release.py --installer --version "$env:RELEASE_TAG" --repository "$env:RELEASE_REPO"
       - name: Verify packaged GUI
         run: python scripts/smoke_exe.py
       - name: Verify real update replacement and restart
-        run: python scripts/smoke_update.py
+        run: |
+          python scripts/smoke_update.py
+          python scripts/smoke_update.py --cache
+          python scripts/smoke_auto_restart.py
       - uses: actions/upload-artifact@v4
         with:
           name: NewsMonitor-Windows
           path: |
-            dist/NewsMonitor.exe
-            dist/NewsMonitor.exe.sha256
-            dist/RELEASE_NOTES.md
+            dist/NewsMonitor-Setup-*.exe
           if-no-files-found: error
   publish:
     needs: build
@@ -56,6 +59,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: NewsMonitor-Windows
@@ -68,4 +72,4 @@ jobs:
           RELEASE_COMMIT: ${{ github.sha }}
         shell: bash
         run: |
-          gh release create "$RELEASE_TAG" dist/NewsMonitor.exe dist/NewsMonitor.exe.sha256 dist/RELEASE_NOTES.md --target "$RELEASE_COMMIT" --title "News Monitor $RELEASE_TAG" --notes-file dist/RELEASE_NOTES.md --latest
+          gh release create "$RELEASE_TAG" dist/NewsMonitor-Setup-*.exe --target "$RELEASE_COMMIT" --title "News Monitor $RELEASE_TAG" --notes-file "releases/$RELEASE_TAG.md" --latest

@@ -29,8 +29,10 @@ class SmoothTermList(tk.Frame):
                                   width=300, highlightthickness=0, yscrollincrement=1)
         self.viewport.pack(fill='both', expand=True)
         self.timer = None
+        self.draw_timer = None
+        self.pending_fraction = None
         self.target = 0.0
-        self.viewport.bind('<Configure>', lambda e: self._draw())
+        self.viewport.bind('<Configure>', lambda e: self._schedule_draw())
         self.viewport.bind('<MouseWheel>', self._wheel)
         self.header.bind('<MouseWheel>', self._wheel)
         self.bind('<MouseWheel>', self._wheel)
@@ -52,6 +54,13 @@ class SmoothTermList(tk.Frame):
     def _destroy(self, event):
         if event.widget is self:
             self._cancel()
+            if self.draw_timer is not None:
+                self.after_cancel(self.draw_timer)
+                self.draw_timer = None
+
+    def _schedule_draw(self):
+        if self.draw_timer is None:
+            self.draw_timer = self.after_idle(self._draw)
 
     def _cancel(self):
         if self.timer is not None:
@@ -69,6 +78,8 @@ class SmoothTermList(tk.Frame):
         self.viewport.yview_moveto(max(0, min(self._limit(), pixels))/total)
 
     def _scroll(self, pixels):
+        if self.draw_timer is not None:
+            self._draw()
         self.hint.hide()
         start = self._offset()
         self.target = max(0, min(self._limit(),
@@ -101,6 +112,10 @@ class SmoothTermList(tk.Frame):
 
     def yview_moveto(self, fraction):
         self._cancel()
+        if self.draw_timer is not None:
+            # Apply against the new scrollregion after the batch is painted.
+            self.pending_fraction = float(fraction)
+            return
         self._move(float(fraction)*len(self.rows)*self.row_height)
         self.target = self._offset()
 
@@ -114,19 +129,19 @@ class SmoothTermList(tk.Frame):
 
     def heading(self, column, **kwargs):
         self.headings[column] = kwargs.get('text', self.headings.get(column, ''))
-        self._draw()
+        self._schedule_draw()
 
     def column(self, column, **kwargs):
         if column == 'state':
             self.state_width = max(self.state_width, kwargs.get('width', 0))
-        self._draw()
+        self._schedule_draw()
 
     def tag_configure(self, *args, **kwargs):
         pass  # Paused rows use semantic theme colors in _draw.
 
     def insert(self, parent, index, *, iid, text='', values=(), tags=()):
         self.rows[str(iid)] = {'text': text, 'values': tuple(values), 'tags': tuple(tags)}
-        self._draw()
+        self._schedule_draw()
         return str(iid)
 
     def delete(self, *items):
@@ -134,7 +149,7 @@ class SmoothTermList(tk.Frame):
         for item in items:
             self.rows.pop(str(item), None)
         self.chosen = tuple(i for i in self.chosen if i in self.rows)
-        self._draw()
+        self._schedule_draw()
 
     def get_children(self, item=''):
         return tuple(self.rows)
@@ -148,7 +163,7 @@ class SmoothTermList(tk.Frame):
 
     def selection_set(self, iid):
         self.chosen = (str(iid),) if str(iid) in self.rows else ()
-        self._draw()
+        self._schedule_draw()
 
     def focus(self, iid=None):
         if iid is not None:
@@ -189,6 +204,9 @@ class SmoothTermList(tk.Frame):
         return 'break'
 
     def _draw(self):
+        if self.draw_timer is not None:
+            self.after_cancel(self.draw_timer)
+            self.draw_timer = None
         width = max(1, self.viewport.winfo_width())
         c = self.colors
         self.header.delete('all')
@@ -204,11 +222,19 @@ class SmoothTermList(tk.Frame):
             text = row['text']
             available = max(0, width-self.state_width-24)
             if self.font.measure(text) > available:
-                while text and self.font.measure(text+'…') > available:
-                    text = text[:-1]
-                text += '…'
+                low, high = 0, len(text)
+                while low < high:
+                    middle = (low + high + 1) // 2
+                    if self.font.measure(text[:middle]+'…') <= available:
+                        low = middle
+                    else:
+                        high = middle - 1
+                text = text[:low] + '…'
             self.viewport.create_text(12, top+self.row_height/2, text=text, anchor='w', font=self.font, fill=fg)
             value = row['values'][0] if row['values'] else ''
             self.viewport.create_text(width-self.state_width/2, top+self.row_height/2, text=value,
                                       font=self.font, fill=c['accent'] if value == 'ON' else c['muted'])
         self.viewport.configure(scrollregion=(0, 0, width, len(self.rows)*self.row_height))
+        if self.pending_fraction is not None:
+            fraction, self.pending_fraction = self.pending_fraction, None
+            self.yview_moveto(fraction)

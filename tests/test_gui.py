@@ -18,6 +18,62 @@ from ui_theme import GAP, RADIUS, RoundedPanel
 
 
 class GuiTests(unittest.TestCase):
+    def test_pause_blocks_collection_notifications_and_rotation(self):
+        self.app.pause_button.invoke()
+        self.app.demo = False
+        self.app.next_fetch = 0
+        self.app.last_rotate = 0
+        self.app.config['auto_rotate'] = True
+        self.app.notification_pending = []
+        self.app.last_tick_wall = time.time() - 8 * 3600
+        with patch('app.threading.Thread.start') as start, \
+                patch.object(self.app, 'change_page') as rotate:
+            self.app.tick()
+            self.app.manual_fetch()
+            self.app.start_fetch()
+            self.app.start_grouping()
+            start.assert_not_called()
+            rotate.assert_not_called()
+        self.assertTrue(self.app.monitoring_paused)
+        self.assertEqual(self.app.pause_button.cget('text'), '모니터링 재개')
+        self.assertEqual(self.app.fetch_button.cget('state'), 'disabled')
+        self.assertIn('모니터링 일시정지', self.app.status_label.cget('text'))
+
+    def test_pause_discards_late_collection_results_and_resume_fetches(self):
+        revision = self.app.revision
+        self.app.busy = True
+        self.app.pause_button.invoke()
+        article = Article('https://example.com/paused', '중단된 기사', '신문', time.time(), '설명')
+        self.app.events.put(('partial', revision, '반도체', [article]))
+        self.app.events.put(('done', revision, [('반도체', [article])], []))
+        with patch.object(self.app.store, 'ingest') as ingest:
+            self.app.process_events()
+            ingest.assert_not_called()
+        self.assertFalse(self.app.busy)
+        self.app.demo = False
+        with patch.object(self.app, 'start_fetch') as fetch, \
+                patch('app.threading.Thread.start'):
+            self.app.pause_button.invoke()
+            fetch.assert_called_once()
+        self.assertFalse(self.app.monitoring_paused)
+        self.assertEqual(self.app.pause_button.cget('text'), '일시정지')
+        self.assertEqual(self.app.fetch_button.cget('state'), 'normal')
+
+    def test_pause_survives_dashboard_rebuild(self):
+        self.app.pause_button.invoke()
+        for widget in self.root.winfo_children():
+            widget.destroy()
+        self.app.build()
+        self.root.update_idletasks()
+        self.assertEqual(self.app.pause_button.cget('text'), '모니터링 재개')
+        self.assertEqual(self.app.fetch_button.cget('state'), 'disabled')
+        self.root.geometry('950x720')
+        self.root.update()
+        button = self.app.pause_button
+        self.assertTrue(button.winfo_ismapped())
+        self.assertLessEqual(button.winfo_rootx() + button.winfo_width(),
+                             self.root.winfo_rootx() + self.root.winfo_width())
+
     def sharing_widgets(self):
         def descendants(widget):
             for child in widget.winfo_children():
@@ -162,7 +218,7 @@ class GuiTests(unittest.TestCase):
             # This checks coalescing, independently of filesystem latency.
             with patch('app.time.monotonic', return_value=100):
                 self.app.process_events()
-            reload.assert_called_once_with()
+            reload.assert_called_once_with(background=True, notify=False)
         self.assertEqual(self.app.events.qsize(), 0)
 
     def test_notification_lock_does_not_block_ui_and_uses_latest_snapshot(self):
@@ -621,7 +677,7 @@ class GuiTests(unittest.TestCase):
         # Shared executor/pool threads outlive a test and own no Tk objects.
         worker_names = {'news-fetch', 'news-summary', 'news-grouping',
                         'notification-enqueue', 'telegram-send', 'kakao-send',
-                        'release-update', 'telegram-setup', 'kakao-test'}
+                        'release-update', 'telegram-setup', 'kakao-test', 'news-views'}
         for worker in threading.enumerate():
             if worker not in self.initial_threads and worker.name in worker_names:
                 worker.join(timeout=10)
@@ -636,6 +692,117 @@ class GuiTests(unittest.TestCase):
                 if getattr(exc, 'winerror', None) not in (5, 32) or attempt == 19:
                     raise
                 time.sleep(.1)
+
+    def wait_for_views(self):
+        deadline = time.monotonic() + 5
+        while self.app.view_pending and time.monotonic() < deadline:
+            time.sleep(.005)
+            self.app.process_events()
+        self.assertFalse(self.app.view_pending)
+
+    def test_background_view_keeps_ui_responsive_and_discards_old_filter(self):
+        from news_core import Store
+        entered, release = threading.Event(), threading.Event()
+        original = Store.list_articles
+        calls = []
+        def blocked(store, keywords, *args, **kwargs):
+            calls.append(tuple(keywords))
+            if len(calls) == 1:
+                entered.set()
+                release.wait(5)
+            return original(store, keywords, *args, **kwargs)
+        with patch.object(Store, 'list_articles', blocked):
+            try:
+                self.app.filter_var.set('반도체')
+                self.app.select_filter()
+                self.assertTrue(entered.wait(2))
+                pulse = tk.BooleanVar(self.root, False)
+                self.root.after(1, lambda: pulse.set(True))
+                self.root.wait_variable(pulse)
+                self.assertTrue(self.app.view_pending)
+                self.app.filter_var.set('전체')
+                self.app.select_filter()
+                self.app.events.put(('view_ready', self.app.view_serial - 1, [], None))
+                self.app.process_events()
+                self.assertEqual(len(self.app.rows), 7)
+            finally:
+                release.set()
+            self.wait_for_views()
+        self.assertEqual(len(self.app.rows), 7)
+        self.assertEqual(self.app.selected, '전체')
+
+    def test_filtered_background_view_still_enqueues_all_active_news(self):
+        self.app.demo = False
+        self.app.filter_var.set('반도체')
+        self.app.selected = '반도체'
+        with patch.object(self.app, 'start_grouping'), patch.object(self.app, 'start_notification_enqueue'):
+            self.app.reload(background=True, notify=True, force=True)
+            # A newer user filter request must retain the notification refresh.
+            self.app.reload(background=True, force=True)
+            self.wait_for_views()
+        self.assertEqual(len(self.app.rows), 3)
+        self.assertEqual(len(self.app.notification_pending), 7)
+        self.app.demo = True
+
+    def test_background_view_failure_retries_without_discarding_notification_refresh(self):
+        self.app.demo = False
+        self.app.kakao_next = self.app.telegram_next = self.app.next_fetch = time.monotonic() + 3600
+        from news_core import Store
+        with patch.object(Store, 'list_articles', side_effect=sqlite3.OperationalError('locked')):
+            self.app.reload(background=True, notify=True)
+            self.wait_for_views()
+        self.assertGreater(self.app.view_retry, 0)
+        self.assertTrue(self.app.view_notify)
+        self.app.view_retry = time.monotonic() - 1
+        with patch.object(self.app, 'start_grouping'), patch.object(self.app, 'start_summaries'), \
+             patch.object(self.app, 'start_notification_enqueue'):
+            self.app._tick()
+            self.wait_for_views()
+        self.assertEqual(len(self.app.notification_pending), 7)
+        self.assertFalse(self.app.view_notify)
+        self.app.demo = True
+
+    def test_term_batch_draws_once_and_pending_draw_is_cancelled_on_close(self):
+        from smooth_list import SmoothTermList
+        widget = SmoothTermList(self.root, colors=self.app.colors)
+        widget.pack()
+        self.root.update()
+        with patch.object(widget, '_draw', wraps=widget._draw) as draw:
+            for index in range(200):
+                widget.insert('', 'end', iid=str(index), text=f'긴 검색어 {index}', values=('ON',))
+            widget.yview_moveto(1)
+            widget.selection_set('199')
+            draw.assert_not_called()
+            self.root.update_idletasks()
+            self.assertEqual(draw.call_count, 1)
+            self.assertEqual(widget.selection(), ('199',))
+            self.assertAlmostEqual(widget._offset(), widget._limit(), delta=1)
+            widget.delete(*widget.get_children())
+            self.assertIsNotNone(widget.draw_timer)
+            widget.destroy()
+            self.assertIsNone(widget.draw_timer)
+            self.root.update()
+
+    def test_company_filter_typing_is_coalesced_and_cancel_closes_pending_search(self):
+        from security_profiles import COMPANIES, TOPICS, make_entries
+        self.app.config['keywords'] += [rule for company, aliases in COMPANIES.items()
+                                       for rule in make_entries(company, aliases, TOPICS)]
+        self.app.settings()
+        self.root.update()
+        widgets = self.group_widgets()
+        search = next(w for w in widgets if w.winfo_name() == 'company_filter')
+        tree = next(w for w in widgets if w.winfo_name() == 'company_list')
+        with patch.object(tree, 'delete', wraps=tree.delete) as delete:
+            for char in '한전KPS':
+                search.insert('end', char)
+            self.root.update()
+            delete.assert_not_called()
+            self.wait_for_layout(200)
+            self.assertEqual(delete.call_count, 1)
+            self.assertEqual(tree.get_children(), ('한전KPS',))
+        search.delete(0, 'end')
+        self.click_settings('취소')
+        self.wait_for_layout(200)
 
     def test_summary_worker_updates_open_preview_and_cards_without_blocking(self):
         import threading
@@ -680,6 +847,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(len(self.app.rows), 7)
         self.app.filter_var.set("반도체")
         self.app.select_filter()
+        self.wait_for_views()
         self.assertEqual(len(self.app.rows), 3)
         self.app.preview(self.app.rows[0])
         self.root.update()
@@ -844,6 +1012,7 @@ class GuiTests(unittest.TestCase):
                               'fallback_reason': 'Google RSS 연결 실패 · Bing RSS 대체 수집'}))
         self.app.process_events()
         self.app.apply_results()
+        self.wait_for_views()
         self.assertFalse(self.app.collection_errors)
         self.assertIn('수집 정상', self.app.last_status)
         self.assertIn('Bing RSS 대체 수집', self.app.last_status)
@@ -862,6 +1031,7 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(any(row['url'] == article.url for row in self.app.store.list_articles(['반도체'])))
         self.app.events.put(('partial', self.app.revision, '반도체', [article]))
         self.app.process_events()
+        self.wait_for_views()
         self.assertEqual(self.app.cycle_added, 1)
         self.assertEqual(len(self.app.rows), 7)
         self.assertEqual(len(self.app.pending_rows), 8)
@@ -1039,14 +1209,15 @@ class GuiTests(unittest.TestCase):
         self.app.pending_rows = list(self.app.rows)
         with patch("ui_theme.system_theme", return_value="dark"):
             self.app.apply_theme()
-        self.root.update()
+            # Tk's scheduled theme poll must observe the same mocked OS theme.
+            self.root.update()
         self.assertEqual(self.app.theme, "dark")
         self.assertEqual(self.app.page, 1)
         self.assertIsNotNone(self.app.pending_rows)
         self.assertEqual(str(self.app.fetch_button.cget("state")), "disabled")
         with patch("ui_theme.system_theme", return_value="light"):
             self.app.apply_theme()
-        self.root.update()
+            self.root.update()
         self.assertEqual(self.app.theme, "light")
         self.assertEqual(self.app.page, 1)
 
@@ -1144,7 +1315,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(len(tree.get_children()), len(INSTITUTIONS))
         search = next(w for w in self.group_widgets() if w.winfo_name() == 'company_filter')
         search.insert(0, '행안부')
-        self.root.update()
+        self.wait_for_layout(200)
         self.assertEqual(tree.get_children(), ('행정안전부',))
         self.click_settings('저장하고 적용')
         self.assertEqual(sum(x.get('profile') == 'company_topic' for x in self.app.config['keywords']), 2 * len(INSTITUTIONS))
@@ -1160,6 +1331,7 @@ class GuiTests(unittest.TestCase):
         self.assertIn(FINANCIAL_FILTER, self.app.filter['values'])
         self.app.filter_var.set(FINANCIAL_FILTER)
         self.app.select_filter()
+        self.wait_for_views()
         self.assertEqual([row['url'] for row in self.app.rows], ['https://example.com/finance'])
         for entry in entries:
             entry['enabled'] = False
@@ -1307,12 +1479,12 @@ class GuiTests(unittest.TestCase):
         self.assertTrue(terms.get_children())
         search = next(w for w in self.group_widgets() if w.winfo_name() == 'company_filter')
         search.insert(0, '한전KPS')
-        self.root.update()
+        self.wait_for_layout(200)
         self.assertEqual(tree.get_children(), ('한전KPS',))
         self.assertEqual(tree.selection(), ('한전KPS',))
         search.delete(0, 'end')
         search.insert(0, '없는 그룹사')
-        self.root.update()
+        self.wait_for_layout(200)
         self.assertFalse(tree.get_children())
         self.assertFalse(terms.get_children())
 

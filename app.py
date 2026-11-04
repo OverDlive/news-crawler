@@ -21,12 +21,15 @@ import urllib.error
 import webbrowser
 
 from news_core import Article, Store, valid_link
+from news_views import ViewLoader
+from copy import deepcopy
 from news_collection import CollectionReport, NewsCollector, ServerCoolingDown
 from news_summary import ArticleSummarizer
 from kakao_notifications import Notifications
 from telegram_notifications import TelegramNotifications
 from tk_runtime import create_root
 from app_updates import app_directory, apply_pending, UpdateChecker
+from app_storage import resolve_data_directory, acquire_instance
 from version import VERSION
 from search_rules import RuleError, SearchRule
 from group_editor import build_group_editor
@@ -77,6 +80,12 @@ class NewsMonitor:
         self.telegram_busy = False
         self.telegram_next = 0
         self.events = queue.Queue()
+        self.view_loader = ViewLoader(directory, self.events)
+        self.view_serial = 0
+        self.view_force = False
+        self.view_notify = False
+        self.view_pending = False
+        self.view_retry = 0
         self.notification_enqueue_busy = False
         self.notification_pending = None
         self.notification_retry = 0
@@ -84,6 +93,7 @@ class NewsMonitor:
         self.summarizer = ArticleSummarizer()
         self.summary_busy = False
         self.grouping_busy = False
+        self.grouping_again = False
         self.grouping_signature = None
         self.summary_preview = None
         self.summary_stop = threading.Event()
@@ -91,6 +101,7 @@ class NewsMonitor:
         self.cycle_stored = set()
         self.cycle_storage_errors = []
         self.busy = False
+        self.monitoring_paused = False
         self.fetch_heartbeat = time.monotonic()
         self.closed = False
         self.revision = 0
@@ -314,7 +325,7 @@ class NewsMonitor:
         self.button(actions, "전체 화면", self.toggle_fullscreen).pack(side="right", padx=(GAP, 0))
         self.fetch_button = self.button(actions, "확인 중…" if self.busy else "지금 확인", self.manual_fetch, True)
         self.fetch_button.pack(side="right")
-        self.fetch_button.configure(state="disabled" if self.busy else "normal")
+        self.fetch_button.configure(state="disabled" if self.busy or self.monitoring_paused else "normal")
 
         section, toolbar = self.surface(self.root, padding=PADDING)
         section.pack(fill="x", padx=28, pady=(0, GAP))
@@ -329,6 +340,9 @@ class NewsMonitor:
         self.count_label = self.label(period, "", 10, c["muted"])
         self.count_label.pack(side='left')
         self.button(period, "수집 기간", lambda: self.settings(monitoring=True)).pack(side='left', padx=(10, 0))
+        self.pause_button = self.button(period, "모니터링 재개" if self.monitoring_paused else "일시정지",
+                                        self.toggle_monitoring)
+        self.pause_button.pack(side='left', padx=(10, 0))
         self.apply_button = self.button(toolbar, "새 결과 보기", self.apply_results)
         self.apply_button.grid(row=1, column=2, sticky='e', pady=(10, 0))
         self.apply_button.configure(state="disabled")
@@ -365,7 +379,7 @@ class NewsMonitor:
         financial = financial_keyword_names(self.config['keywords'])
         return ["전체", *([FINANCIAL_FILTER] if financial else []), *self.active_keywords()]
 
-    def reload(self, force=False):
+    def reload(self, force=False, *, background=False, notify=False):
         active = self.active_keywords()
         financial = financial_keyword_names(self.config['keywords'])
         filters = self.filter_choices()
@@ -376,7 +390,30 @@ class NewsMonitor:
         self.feed_name.configure(text='전체 뉴스' if self.selected == '전체' else self.selected)
         keywords = (active if self.selected == "전체" else financial
                     if self.selected == FINANCIAL_FILTER else [self.selected])
+        self.view_serial += 1
+        self.view_retry = 0
+        if background:
+            self.view_force = self.view_force or force
+            self.view_notify = self.view_notify or notify
+            self.view_pending = True
+            try:
+                self.view_loader.submit(self.view_serial, keywords, active, self.config['hours'],
+                                        self.config['keywords'], self.view_notify)
+            except Exception:
+                self.view_pending = False
+                self.view_retry = time.monotonic() + 1
+                raise
+            if self.tick_id:
+                self.root.after_cancel(self.tick_id)
+                self.tick_id = self.root.after(20, self.tick)
+            return
         fresh = self.store.list_articles(keywords, self.config["hours"], rules=self.config['keywords'])
+        self.view_pending = self.view_force = self.view_notify = False
+        self.apply_view(fresh, force)
+        self.start_grouping()
+        return fresh
+
+    def apply_view(self, fresh, force=False):
         # New arrivals are committed at a page boundary, so readers keep their place.
         if force or not self.rows:
             self.rows = fresh
@@ -385,27 +422,35 @@ class NewsMonitor:
         elif fresh != self.rows:
             self.pending_rows = fresh
             self.apply_button.configure(state="normal")
-        self.start_grouping()
-        return fresh
 
     def start_grouping(self):
-        if self.demo or self.closed or self.grouping_busy:
+        if self.demo or self.closed or self.monitoring_paused:
+            return
+        if self.grouping_busy:
+            self.grouping_again = True
             return
         from news_similarity import compare_bodies, fingerprint
-        rows = self.store.list_articles(self.active_keywords(), self.config['hours'], grouped=False,
-                                        rules=self.config['keywords'])
-        signature = tuple((r['url'], fingerprint(r['body'])) for r in rows if r['body'])
-        if signature == self.grouping_signature:
-            return
-        self.grouping_signature = signature
-        cached = self.store.comparison_cache()
         events, stopped = self.events, self.summary_stop
+        directory, hours = self.store.directory, self.config['hours']
+        active, rules = self.active_keywords(), deepcopy(self.config['keywords'])
+        previous, revision = self.grouping_signature, self.revision
         self.grouping_busy = True
+        self.grouping_again = False
         def worker():
             try:
+                store = Store(directory, read_only=True)
+                try:
+                    rows = store.list_articles(active, hours, grouped=False, rules=rules)
+                    signature = tuple((r['url'], fingerprint(r['body'])) for r in rows if r['body'])
+                    if signature == previous:
+                        events.put(('grouping_unchanged', revision))
+                        return
+                    cached = store.comparison_cache()
+                finally:
+                    store.close()
                 results = compare_bodies(rows, cached, stopped)
                 if not stopped.is_set():
-                    events.put(('grouped', results))
+                    events.put(('grouped', results, signature, revision))
             except Exception:
                 logging.exception('Article body comparison failed')
                 events.put(('grouping_failed',))
@@ -419,7 +464,12 @@ class NewsMonitor:
     def apply_results(self):
         self.page = 0
         self.last_rotate = time.monotonic()
-        self.reload(force=True)
+        if self.pending_rows is not None:
+            self.apply_view(self.pending_rows, force=True)
+        if self.view_pending:
+            self.view_force = True
+        else:
+            self.reload(force=True, background=True)
 
     def render(self, *, resize=False):
         self.apply_button.configure(state="normal" if self.pending_rows is not None else "disabled")
@@ -580,7 +630,8 @@ class NewsMonitor:
         self.selected = self.filter_var.get()
         self.page = 0
         self.last_rotate = time.monotonic()
-        self.reload(force=True)
+        self.pending_rows = None
+        self.reload(force=True, background=True)
 
     def change_page(self, direction, *, wrap=False):
         if self.preview_open:
@@ -612,12 +663,29 @@ class NewsMonitor:
             messagebox.showerror("저장 오류", f"설정을 저장하지 못했습니다.\n{exc}", parent=self.root)
             return False
 
+    def toggle_monitoring(self):
+        self.monitoring_paused = not self.monitoring_paused
+        if self.monitoring_paused:
+            # Cancel the active collection and ignore its queued/late results.
+            self.revision += 1
+            self.busy = False
+        else:
+            self.next_fetch = time.monotonic()
+            self.last_rotate = time.monotonic()
+            self.last_status = "모니터링 재개 · 뉴스 확인 예정"
+            self.reload(background=True, notify=not self.demo)
+        self.pause_button.configure(text="모니터링 재개" if self.monitoring_paused else "일시정지")
+        self.fetch_button.configure(state="disabled" if self.monitoring_paused else "normal", text="지금 확인")
+        self.tick()
+
     def manual_fetch(self):
-        self.reload(force=True)
+        if self.monitoring_paused:
+            return
+        self.reload(force=True, background=True)
         self.start_fetch()
 
     def start_fetch(self):
-        if self.busy or not self.active_keywords() or self.demo:
+        if self.monitoring_paused or self.busy or not self.active_keywords() or self.demo:
             return
         rules = [dict(entry) for entry in self.config["keywords"] if entry["enabled"]]
         # Allow a full catalog sweep at the existing five-second request pace.
@@ -672,7 +740,7 @@ class NewsMonitor:
     def process_events(self):
         # A catalog sweep can publish hundreds of results at once (especially
         # Bing fallback). Never drain an unbounded queue in a Tk callback.
-        deadline = time.monotonic() + .05
+        deadline = time.monotonic() + .012
         refresh = repaint = notify = False
         for _ in range(32):
             if time.monotonic() >= deadline:
@@ -681,9 +749,32 @@ class NewsMonitor:
                 event = self.events.get_nowait()
             except queue.Empty:
                 break
-            if event[0] == 'grouped':
+            if event[0] == 'view_ready':
+                if event[1] != self.view_serial:
+                    continue
+                self.view_pending = False
+                self.apply_view(event[2], self.view_force)
+                self.view_force = self.view_notify = False
+                if event[3] is not None and not self.demo:
+                    self.notification_pending = event[3]
+                self.start_grouping()
+            elif event[0] == 'view_failed':
+                if event[1] == self.view_serial:
+                    self.view_pending = False
+                    self.view_retry = time.monotonic() + 1
+            elif event[0] == 'grouping_unchanged':
                 self.grouping_busy = False
+                if self.grouping_again or event[1] != self.revision:
+                    refresh = True
+            elif event[0] == 'grouped':
+                self.grouping_busy = False
+                if len(event) > 3 and event[3] != self.revision:
+                    self.grouping_signature = None
+                    refresh = True
+                    continue
                 self.store.save_comparisons(event[1])
+                if len(event) > 2:
+                    self.grouping_signature = event[2]
                 refresh = notify = True
             elif event[0] == 'notifications_done':
                 self.notification_enqueue_busy = False
@@ -693,6 +784,7 @@ class NewsMonitor:
                     self.notification_retry = time.monotonic() + 30
             elif event[0] == 'grouping_failed':
                 self.grouping_busy = False
+                self.grouping_signature = None
                 self.last_status = '기사 본문 비교 실패 · 로그와 설치된 라이브러리를 확인하세요.'
             elif event[0] == 'summary':
                 _, url, summary = event
@@ -757,7 +849,7 @@ class NewsMonitor:
                     else:
                         self.last_status = f"수집 정상 · 이번 확인 새 기사 {new}건"
                     if metrics:
-                        self.last_status += f" · {metrics['seconds']:.1f}초 / 요청 {metrics['requests']}개"
+                        self.last_status += f" · {metrics.get('seconds', 0):.1f}초 / 요청 {metrics.get('requests', 0)}개"
                         if metrics.get('fallback_reason'):
                             self.last_status += ' · ' + metrics['fallback_reason']
                 except (sqlite3.Error, OSError) as exc:
@@ -767,17 +859,15 @@ class NewsMonitor:
 
         # Build the grouped snapshot once per slice, and share it with both
         # notification services. Preserve the existing page-boundary behavior.
-        fresh = self.reload() if refresh else None
+        if refresh:
+            self.reload(background=True, notify=notify and not self.demo)
         if repaint:
             self.render()
-        if notify and not self.demo:
-            self.notification_pending = (fresh if self.selected == '전체' else
-                self.store.list_articles(self.active_keywords(), self.config['hours'], rules=self.config['keywords']))
         self.start_notification_enqueue()
 
     def start_notification_enqueue(self):
         """Notification DB locks must never hold up the Tk event loop."""
-        if (self.closed or self.demo or self.notification_enqueue_busy
+        if (self.closed or self.demo or self.monitoring_paused or self.notification_enqueue_busy
                 or self.notification_pending is None or time.monotonic() < self.notification_retry):
             return
         rows = self.notification_pending
@@ -802,7 +892,7 @@ class NewsMonitor:
             raise
 
     def start_summaries(self):
-        if self.demo or self.summary_busy or self.closed:
+        if self.demo or self.summary_busy or self.closed or self.monitoring_paused:
             return
         rows = self.store.summary_candidates(self.active_keywords(), self.config['hours'])
         if not rows:
@@ -813,7 +903,7 @@ class NewsMonitor:
         def worker():
             try:
                 for row in rows:
-                    if stopped.is_set():
+                    if stopped.is_set() or self.monitoring_paused:
                         break
                     result = summarizer.create(row)
                     if not stopped.is_set():
@@ -843,7 +933,8 @@ class NewsMonitor:
             logging.exception("Automatic monitor tick failed; retrying in one second")
         finally:
             if not self.closed:
-                self.tick_id = self.root.after(20 if not self.events.empty() else 1000, self.tick)
+                delay = 20 if not self.events.empty() else 50 if self.view_pending else 1000
+                self.tick_id = self.root.after(delay, self.tick)
 
     def _tick(self):
         wall = time.time()
@@ -857,6 +948,8 @@ class NewsMonitor:
                 self.busy = False
         self.last_tick_wall = wall
         self.process_events()
+        if self.view_retry and time.monotonic() >= self.view_retry:
+            self.reload(background=True)
         if self.busy and time.monotonic() - self.fetch_heartbeat > max(120, self.collector.request_timeout + 30):
             logging.warning('Collection stopped reporting progress; cancelling cycle %s and retrying', self.revision)
             self.revision += 1
@@ -864,22 +957,22 @@ class NewsMonitor:
             self.next_fetch = time.monotonic()
             self.last_status = '수집 응답 지연 · 자동 복구 중'
         self.start_summaries()
-        if not self.demo and not self.telegram_busy and time.monotonic() >= self.telegram_next:
+        if not self.monitoring_paused and not self.demo and not self.telegram_busy and time.monotonic() >= self.telegram_next:
             self.telegram_busy = True
             def send_telegram():
                 try:
-                    self.telegram.deliver(stopped=lambda: self.closed)
+                    self.telegram.deliver(stopped=lambda: self.closed or self.monitoring_paused)
                 except Exception:
                     logging.error('Telegram delivery processing failed; check storage')
                 finally:
                     self.telegram_busy = False
                     self.telegram_next = time.monotonic() + 4
             threading.Thread(target=send_telegram, daemon=True, name='telegram-send').start()
-        if not self.demo and not self.kakao_busy and time.monotonic() >= self.kakao_next:
+        if not self.monitoring_paused and not self.demo and not self.kakao_busy and time.monotonic() >= self.kakao_next:
             self.kakao_busy = True
             def send_notifications():
                 try:
-                    self.notifications.deliver(stopped=lambda: self.closed)
+                    self.notifications.deliver(stopped=lambda: self.closed or self.monitoring_paused)
                 except sqlite3.Error:
                     logging.exception('Kakao delivery storage failed')
                 finally:
@@ -887,14 +980,14 @@ class NewsMonitor:
                     self.kakao_next = time.monotonic() + 30
             threading.Thread(target=send_notifications, daemon=True, name='kakao-send').start()
         now = time.monotonic()
-        if now >= self.next_fetch and not self.busy:
+        if not self.monitoring_paused and now >= self.next_fetch and not self.busy:
             if self.active_keywords() and not self.demo:
                 self.start_fetch()
             else:
                 self.next_fetch = now + 60
         if self.config["theme"] == "system" and not self.preview_open and self.settings_window is None:
             self.apply_theme()
-        if self.config["auto_rotate"] and not self.preview_open and self.settings_window is None:
+        if not self.monitoring_paused and self.config["auto_rotate"] and not self.preview_open and self.settings_window is None:
             if now - self.last_rotate >= self.config["page_seconds"]:
                 self.change_page(1, wrap=True)
         success = self.store.latest_success(self.active_keywords())
@@ -913,6 +1006,8 @@ class NewsMonitor:
         if not self.demo:
             waiting += '  ·  ' + schedule_status(self.config['sharing_schedule'], wall)
         text = f"{self.last_status}{pending}\n마지막 수집 성공 {timestamp(success)}  ·  {waiting}"
+        if self.monitoring_paused:
+            text = f"모니터링 일시정지 · 수집 / 자동 알림 / 자동 넘김 중단\n마지막 수집 성공 {timestamp(success)}  ·  ‘모니터링 재개’를 눌러 다시 시작하세요."
         self.status_label.configure(text=text, fg=self.colors["warning"] if self.collection_errors else self.colors["muted"],
                                     wraplength=max(500, self.root.winfo_width() - 340))
 
@@ -1320,7 +1415,7 @@ class NewsMonitor:
         checked_label.pack(anchor="w", pady=(0, GAP))
         update_message = self.label(update_box, "", 12, wraplength=580, justify='left', name='update_status')
         update_message.pack(anchor="w", fill='x', pady=(0, GAP))
-        self.label(update_box, "시작 후 및 6시간마다 새 버전을 확인합니다. 다운로드한 업데이트는 다음 실행 때 적용하며 설정과 뉴스는 유지합니다.",
+        self.label(update_box, "시작 후 및 6시간마다 새 버전을 확인합니다. 다운로드한 업데이트는 작업 완료 후 자동으로 종료·재실행하여 적용합니다. 설정 창을 닫으면 진행되며 설정과 뉴스는 유지합니다.",
                    10, self.colors['muted'], wraplength=580, justify='left').pack(anchor='w', fill='x', pady=(0, GAP))
         if self.demo:
             self.label(update_box, "데모에서는 업데이트 확인과 다운로드를 하지 않습니다.", 10, self.colors['muted']).pack(anchor='w')
@@ -1330,17 +1425,22 @@ class NewsMonitor:
         update_button = self.button(update_box, "업데이트 확인", self.updates.check, True)
         update_button.pack(anchor='w', pady=(GAP, 0))
         update_timer = [None]
+        last_update_state = [None]
 
         def refresh_updates():
             if self.settings_window is not win:
                 return
             state = self.updates.snapshot()
+            if state == last_update_state[0]:
+                update_timer[0] = win.after(1000, refresh_updates)
+                return
+            last_update_state[0] = state
             latest_label.configure(text=f"최신 버전  {state['latest'] or '아직 확인하지 않음'}")
             checked_label.configure(text=f"마지막 확인  {time.strftime('%Y.%m.%d %H:%M:%S', time.localtime(state['checked'])) if state['checked'] else '아직 없음'}")
             update_message.configure(text=state['message'])
             update_button.configure(text='확인 중…' if state['busy'] else '업데이트 확인',
                                     state='disabled' if self.demo or state['busy'] else 'normal')
-            update_timer[0] = win.after(250, refresh_updates)
+            update_timer[0] = win.after(1000, refresh_updates)
         refresh_updates()
 
         def refresh_ordinary():
@@ -1401,7 +1501,8 @@ class NewsMonitor:
                     self.store.remove_keyword(item["name"])
             self.collection_errors = []
             self.page = 0
-            self.reload(force=True)
+            self.pending_rows = None
+            self.reload(force=True, background=True)
             self.next_fetch = time.monotonic()
             self.telegram_next = self.kakao_next = 0
             close()
@@ -1456,6 +1557,7 @@ class NewsMonitor:
         logging.info("News monitor closing")
         self.closed = True
         self.summary_stop.set()
+        self.view_loader.close()
         if self.settings_window is not None and self.settings_window.winfo_exists():
             self.root.tk.call(self.settings_window.protocol('WM_DELETE_WINDOW'))
         if self.telegram_window is not None and self.telegram_window.winfo_exists():
@@ -1478,7 +1580,18 @@ def main():
     parser.add_argument("--fullscreen", action="store_true", help="전체 화면으로 시작")
     parser.add_argument("--no-update", action="store_true", help="이번 실행에서 자동 업데이트 건너뛰기")
     args = parser.parse_args()
-    directory = args.data_dir or app_directory() / ("demo_data" if args.demo else "data")
+    try:
+        if getattr(sys, 'frozen', False) and not (args.demo or args.smoke_test):
+            acquire_instance()
+        directory = resolve_data_directory(app_directory(), args.data_dir, args.demo,
+                                           getattr(sys, 'frozen', False))
+    except Exception as exc:
+        root = create_root()
+        root.withdraw()
+        messagebox.showerror('시작할 수 없습니다',
+                             f'기존 데이터는 삭제하지 않았습니다.\n{exc}', parent=root)
+        root.destroy()
+        return 1
     directory.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO, handlers=[RotatingFileHandler(
         directory / "monitor.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")],
@@ -1501,6 +1614,7 @@ def main():
         return 1
     if args.fullscreen:
         app.toggle_fullscreen()
+    smoke_failed = []
     if args.smoke_test:
         try:
             from bounded_http import smoke_test
@@ -1536,15 +1650,46 @@ def main():
         assert digest_rows[-1][0] not in telegram_text(representative)
         assert digest_rows[0][0] not in telegram_text(representative)
         logging.info('Institution representative preview smoke test passed')
-        root.after(1200, app.close)
+        expected_urls = [row['url'] for row in app.rows]
+        app.reload(force=True, background=True)
+        def finish_smoke():
+            if app.view_pending or app.view_retry or [row['url'] for row in app.rows] != expected_urls:
+                smoke_failed.append(True)
+                logging.error('Background article view smoke test failed')
+            else:
+                logging.info('Background article view smoke test passed')
+            app.close()
+        root.after(1200, finish_smoke)
     if updates_enabled:
         def check_updates():
             app.updates.check()
             if not app.closed:
                 root.after(6 * 60 * 60 * 1000, check_updates)
         root.after(5000, check_updates)
+        def restart_for_update():
+            if app.closed:
+                return
+            state = app.updates.snapshot()
+            # Do not interrupt edits, article persistence or notification delivery.
+            windows_open = any(isinstance(child, tk.Toplevel) and child.winfo_exists()
+                               for child in root.winfo_children())
+            busy = any(getattr(app, name, False) for name in (
+                'busy', 'summary_busy', 'grouping_busy', 'notification_enqueue_busy',
+                'telegram_busy', 'kakao_busy'))
+            if state.get('ready') and not state['busy'] and not windows_open and not busy:
+                try:
+                    if apply_pending():
+                        app.close()
+                        return
+                except Exception:
+                    logging.exception('Update restart failed; retaining current application')
+                    with app.updates.lock:
+                        app.updates.state.update(ready=False,
+                            message='자동 업데이트 적용에 실패했습니다. 업데이트 확인을 눌러 재시도하세요.')
+            root.after(2000, restart_for_update)
+        root.after(7000, restart_for_update)
     root.mainloop()
-    return 0
+    return 1 if smoke_failed else 0
 
 
 if __name__ == "__main__":

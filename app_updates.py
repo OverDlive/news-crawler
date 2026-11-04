@@ -1,8 +1,4 @@
-"""GitHub release updates for the portable Windows executable.
-
-Downloads never touch the running EXE. A separate helper applies a verified
-pending update on the next launch, after the old process releases its file.
-"""
+"""Verified updates applied by a hidden helper after graceful shutdown."""
 from __future__ import annotations
 
 import hashlib
@@ -20,7 +16,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from version import ASSET_NAME, REPOSITORY, VERSION
+from version import REPOSITORY, VERSION
+from app_storage import user_directory
 
 MAX_EXE_BYTES = 150 * 1024 * 1024
 
@@ -34,6 +31,19 @@ def version_tuple(value):
 
 def app_directory():
     return Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
+
+
+def update_directory(executable):
+    key = hashlib.sha256(str(Path(executable).resolve()).casefold().encode()).hexdigest()[:20]
+    directory = user_directory() / 'updates' / key
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def pending_path(executable):
+    # Accept downloads staged by versions before the installer migration.
+    legacy = Path(executable).with_name(Path(executable).name + '.pending.json')
+    return legacy if legacy.exists() else update_directory(executable) / 'pending.json'
 
 
 def digest(path):
@@ -73,9 +83,14 @@ def latest_release(current=VERSION):
     return release
 
 
+def setup_asset_name(tag):
+    version_tuple(tag)
+    return f'NewsMonitor-Setup-{tag.removeprefix("v")}.exe'
+
+
 def stage_latest(executable, current=VERSION, release=None):
     executable = Path(executable).resolve()
-    pending = executable.with_name(executable.name + '.pending.json')
+    pending = pending_path(executable)
     if pending.exists():
         return None
     release = release if release is not None else latest_release(current)
@@ -85,33 +100,31 @@ def stage_latest(executable, current=VERSION, release=None):
     if release.get('draft') or release.get('prerelease') or version_tuple(tag) <= version_tuple(current):
         return None
     assets = {asset['name']: asset for asset in release.get('assets', [])}
-    if ASSET_NAME not in assets or ASSET_NAME + '.sha256' not in assets:
-        raise ValueError('릴리스에 실행 파일 또는 검증 파일이 없습니다.')
+    asset_name = setup_asset_name(tag)
+    asset = assets.get(asset_name, {})
+    checksum = asset.get('digest') or ''
+    if not re.fullmatch(r'sha256:[0-9a-fA-F]{64}', checksum):
+        raise ValueError('설치 파일 또는 GitHub SHA-256 검증값이 없습니다.')
+    expected = checksum.split(':', 1)[1].lower()
     # Construct known repository URLs instead of trusting arbitrary API asset URLs.
-    descriptor, temporary = tempfile.mkstemp(prefix='.news-update-', suffix='.exe', dir=executable.parent)
+    descriptor, temporary = tempfile.mkstemp(prefix='.news-update-', suffix='.exe', dir=pending.parent)
     os.close(descriptor)
     staged = Path(temporary)
-    checksum = staged.with_suffix('.sha256')
     metadata = pending.with_suffix('.tmp')
     try:
-        download(release_url(tag, ASSET_NAME + '.sha256'), checksum, 1024)
-        expected = checksum.read_text(encoding='utf-8').strip().split()[0].lower()
-        if not re.fullmatch('[0-9a-f]{64}', expected):
-            raise ValueError('잘못된 SHA-256 검증 파일입니다.')
-        download(release_url(tag, ASSET_NAME), staged, MAX_EXE_BYTES)
+        download(release_url(tag, asset_name), staged, MAX_EXE_BYTES)
         if digest(staged) != expected:
             raise ValueError('업데이트 파일 SHA-256이 일치하지 않습니다.')
         with staged.open('rb') as source:
             if source.read(2) != b'MZ':
                 raise ValueError('Windows 실행 파일이 아닙니다.')
-        metadata.write_text(json.dumps({'version': tag, 'file': staged.name, 'sha256': expected}), encoding='utf-8')
+        metadata.write_text(json.dumps({'version': tag, 'file': staged.name, 'sha256': expected, 'kind': 'installer'}), encoding='utf-8')
         metadata.replace(pending)
         return tag
     except BaseException:
         staged.unlink(missing_ok=True)
         raise
     finally:
-        checksum.unlink(missing_ok=True)
         metadata.unlink(missing_ok=True)
 
 
@@ -134,7 +147,7 @@ class UpdateChecker:
         self.downloadable = getattr(sys, 'frozen', False) if downloadable is None else downloadable
         self.lock = threading.Lock()
         self.state = {'busy': False, 'latest': None, 'checked': 0,
-                      'message': '아직 업데이트를 확인하지 않았습니다.'}
+                      'ready': False, 'message': '아직 업데이트를 확인하지 않았습니다.'}
 
     def snapshot(self):
         with self.lock:
@@ -144,15 +157,15 @@ class UpdateChecker:
         with self.lock:
             if self.state['busy']:
                 return False
-            self.state.update(busy=True, message='새 버전을 확인하고 있습니다…')
+            self.state.update(busy=True, ready=False, message='새 버전을 확인하고 있습니다…')
         def worker():
             latest = None
             try:
-                pending = self.executable.with_name(self.executable.name + '.pending.json')
+                pending = pending_path(self.executable) if self.downloadable else None
                 if self.downloadable and pending.exists():
                     latest = json.loads(pending.read_text(encoding='utf-8'))['version']
                     version_tuple(latest)
-                    message = f'{latest} 다운로드 완료 · 프로그램을 종료하고 다시 실행하면 적용됩니다.'
+                    message = f'{latest} 다운로드 완료 · 작업이 끝나면 자동으로 종료하고 다시 실행합니다.'
                 else:
                     release = latest_release(self.current)
                     latest = release['tag_name'] if release else None
@@ -166,9 +179,10 @@ class UpdateChecker:
                         with self.lock:
                             self.state.update(latest=latest, message=f'{latest} 다운로드 및 검증 중…')
                         stage_latest(self.executable, self.current, release=release)
-                        message = f'{latest} 다운로드 완료 · 프로그램을 종료하고 다시 실행하면 적용됩니다.'
+                        message = f'{latest} 다운로드 완료 · 작업이 끝나면 자동으로 종료하고 다시 실행합니다.'
                 with self.lock:
-                    self.state.update(latest=latest, message=message, checked=time.time())
+                    self.state.update(latest=latest, message=message, checked=time.time(),
+                                      ready=self.downloadable and pending.exists())
             except Exception:
                 logging.exception('Update check failed; continuing current version')
                 with self.lock:
@@ -188,14 +202,14 @@ def apply_pending(executable=None, arguments=None):
     if os.name != 'nt' or not getattr(sys, 'frozen', False):
         return False
     executable = Path(executable or sys.executable).resolve()
-    pending = executable.with_name(executable.name + '.pending.json')
+    pending = pending_path(executable)
     if not pending.exists():
         return False
     metadata = json.loads(pending.read_text(encoding='utf-8'))
     name = metadata['file']
     if not re.fullmatch(r'\.news-update-[a-z0-9_\-]+\.exe', name):
         raise ValueError('잘못된 업데이트 파일 경로입니다.')
-    staged = executable.parent / name
+    staged = pending.parent / name
     if version_tuple(metadata['version']) <= version_tuple(VERSION):
         staged.unlink(missing_ok=True)
         pending.unlink()
@@ -205,9 +219,19 @@ def apply_pending(executable=None, arguments=None):
         pending.unlink()
         raise ValueError('대기 중인 업데이트 파일 검증에 실패했습니다.')
     backup = executable.with_name(executable.name + '.previous')
-    log = executable.with_name('update.log')
+    log = pending.parent / 'update.log'
     # Windows CRT quoting is also the quoting accepted by Start-Process.
     args = subprocess.list2cmdline(list(sys.argv[1:] if arguments is None else arguments))
+    installer = metadata.get('kind') == 'installer'
+    install_args = subprocess.list2cmdline([
+        '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
+        '/NOCLOSEAPPLICATIONS', '/NORESTARTAPPLICATIONS',
+        f'/DIR={executable.parent}', f'/LOG={pending.parent / "setup.log"}'])
+    replacement = (f"$setup = Start-Process -FilePath $staged -ArgumentList {ps_literal(install_args)} -WindowStyle Hidden -Wait -PassThru\n"
+                   "    if ($setup.ExitCode -ne 0) { throw ('Setup exit code: ' + $setup.ExitCode) }\n"
+                   f"    $launchTarget = {ps_literal(executable.parent / 'NewsMonitor.exe')}\n"
+                   "    if (-not (Test-Path -LiteralPath $launchTarget)) { throw 'Installed executable missing' }") if installer else (
+                       'Copy-Item -LiteralPath $staged -Destination $target\n    $launchTarget = $target')
     script = f"""$ErrorActionPreference = 'Stop'
 # Launching from PowerShell 7 can otherwise inherit incompatible module paths.
 $env:PSModulePath = "$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\Modules"
@@ -232,14 +256,16 @@ try {{
             Start-Sleep -Seconds 1
         }}
     }}
-    Move-Item -LiteralPath $staged -Destination $target
+    {replacement}
+    Remove-Item -LiteralPath $staged
     $installed = $true
     Remove-Item -LiteralPath $pending
     $env:PYINSTALLER_RESET_ENVIRONMENT = '1'
-    {"Start-Process -FilePath $target -ArgumentList " + ps_literal(args) + " -WindowStyle Hidden" if args else "Start-Process -FilePath $target -WindowStyle Hidden"}
+    {"Start-Process -FilePath $launchTarget -ArgumentList " + ps_literal(args) + " -WindowStyle Hidden" if args else "Start-Process -FilePath $launchTarget -WindowStyle Hidden"}
 }} catch {{
+    $env:PYINSTALLER_RESET_ENVIRONMENT = '1'
     $_ | Out-File -LiteralPath $log -Append -Encoding utf8
-    if ($installed -and (Test-Path -LiteralPath $target)) {{ Remove-Item -LiteralPath $target }}
+    if ($backedUp -and (Test-Path -LiteralPath $target)) {{ Remove-Item -LiteralPath $target }}
     if ($backedUp -and (Test-Path -LiteralPath $backup)) {{ Move-Item -LiteralPath $backup -Destination $target }}
     Remove-Item -LiteralPath $pending -ErrorAction SilentlyContinue
     {"Start-Process -FilePath $target -ArgumentList " + ps_literal(args) + " -WindowStyle Hidden" if args else "Start-Process -FilePath $target -WindowStyle Hidden"}
@@ -247,7 +273,7 @@ try {{
     Remove-Item -LiteralPath $PSCommandPath -ErrorAction SilentlyContinue
 }}
 """
-    descriptor, helper = tempfile.mkstemp(prefix='.news-apply-', suffix='.ps1', dir=executable.parent)
+    descriptor, helper = tempfile.mkstemp(prefix='.news-apply-', suffix='.ps1', dir=pending.parent)
     os.close(descriptor)
     Path(helper).write_text(script, encoding='utf-8-sig')
     try:

@@ -12,6 +12,13 @@ import app_updates as updates
 
 
 class UpdateTests(unittest.TestCase):
+    def setUp(self):
+        self.cache = tempfile.TemporaryDirectory()
+        self.addCleanup(self.cache.cleanup)
+        patcher = patch.object(updates, 'user_directory', return_value=Path(self.cache.name))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def wait_for_check(self, checker):
         deadline = time.monotonic() + 3
         while checker.snapshot()['busy'] and time.monotonic() < deadline:
@@ -57,7 +64,7 @@ class UpdateTests(unittest.TestCase):
             executable = Path(folder) / 'NewsMonitor.exe'
             checker = updates.UpdateChecker(executable, current='1.0.0', downloadable=True)
             def stage(*args, **kwargs):
-                executable.with_name(executable.name + '.pending.json').write_text(json.dumps({'version': 'v1.0.1'}))
+                updates.pending_path(executable).write_text(json.dumps({'version': 'v1.0.1'}))
                 return 'v1.0.1'
             with patch.object(updates, 'latest_release', return_value=self.release()), \
                  patch.object(updates, 'stage_latest', side_effect=stage) as download:
@@ -66,20 +73,20 @@ class UpdateTests(unittest.TestCase):
                 checker.check()
                 self.wait_for_check(checker)
             self.assertEqual(download.call_count, 1)
+            self.assertTrue(checker.snapshot()['ready'])
             self.assertIn('다운로드 완료', checker.snapshot()['message'])
             self.assertIn('다시 실행', checker.snapshot()['message'])
 
     def release(self, tag='v1.0.1', **extra):
-        return {'tag_name': tag, 'assets': [{'name': updates.ASSET_NAME},
-                 {'name': updates.ASSET_NAME + '.sha256'}], **extra}
+        return {'tag_name': tag, 'assets': [{'name': updates.setup_asset_name(tag),
+                 'digest': 'sha256:' + hashlib.sha256(b'MZverified executable').hexdigest()}], **extra}
 
     def stage(self, folder, release, corrupt=False):
         binary = b'MZverified executable'
         calls = []
         def download(url, path, limit):
             calls.append(url)
-            Path(path).write_bytes(b'0' * 64 if corrupt and url.endswith('.sha256') else
-                hashlib.sha256(binary).hexdigest().encode() if url.endswith('.sha256') else binary)
+            Path(path).write_bytes(b'MZcorrupt' if corrupt else binary)
         with patch.object(updates.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(release).encode())), \
              patch.object(updates, 'download', side_effect=download):
             return updates.stage_latest(Path(folder) / 'NewsMonitor.exe', current='1.0.0'), calls
@@ -91,8 +98,8 @@ class UpdateTests(unittest.TestCase):
             tag, calls = self.stage(folder, self.release())
             self.assertEqual(tag, 'v1.0.1')
             self.assertEqual(exe.read_bytes(), b'old exe')
-            metadata = json.loads(exe.with_name(exe.name + '.pending.json').read_text())
-            self.assertEqual(updates.digest(Path(folder) / metadata['file']), metadata['sha256'])
+            metadata = json.loads(updates.pending_path(exe).read_text())
+            self.assertEqual(updates.digest(updates.pending_path(exe).parent / metadata['file']), metadata['sha256'])
             self.assertTrue(all(url.startswith(f'https://github.com/{updates.REPOSITORY}/releases/download/') for url in calls))
 
     def test_checksum_failure_leaves_no_pending_update(self):
@@ -100,6 +107,19 @@ class UpdateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'SHA-256'):
                 self.stage(folder, self.release(), corrupt=True)
             self.assertEqual(list(Path(folder).iterdir()), [])
+
+    def test_setup_requires_github_digest_and_uses_single_asset(self):
+        with tempfile.TemporaryDirectory() as folder:
+            release = self.release()
+            release['assets'][0].pop('digest')
+            with self.assertRaisesRegex(ValueError, 'SHA-256'):
+                self.stage(folder, release)
+            tag, calls = self.stage(folder, self.release())
+            self.assertEqual(tag, 'v1.0.1')
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(calls[0].endswith('/NewsMonitor-Setup-1.0.1.exe'))
+            pending = updates.pending_path(Path(folder) / 'NewsMonitor.exe')
+            self.assertEqual(json.loads(pending.read_text())['kind'], 'installer')
 
     def test_old_equal_and_prerelease_are_ignored(self):
         for release in [self.release('v0.9.0'), self.release('v1.0.0'), self.release(prerelease=True)]:
@@ -129,24 +149,32 @@ class UpdateTests(unittest.TestCase):
             exe = Path(folder) / "News Monitor's.exe"
             exe.write_bytes(b'old exe')
             self.stage(folder, self.release())
-            source_pending = Path(folder) / 'NewsMonitor.exe.pending.json'
-            source_pending.rename(exe.with_name(exe.name + '.pending.json'))
+            source_pending = updates.pending_path(Path(folder) / 'NewsMonitor.exe')
+            destination = updates.pending_path(exe)
+            import shutil
+            for item in source_pending.parent.iterdir():
+                if item != source_pending:
+                    shutil.copy2(item, destination.parent / item.name)
+            source_pending.rename(updates.pending_path(exe))
             with patch.object(updates.sys, 'frozen', True, create=True), \
                  patch.object(updates, 'VERSION', '1.0.0'), \
                  patch.object(updates.subprocess, 'Popen') as launch:
                 self.assertTrue(updates.apply_pending(exe, ['--data-dir', r'C:\data with spaces']))
             self.assertEqual(launch.call_args.kwargs['creationflags'], updates.subprocess.CREATE_NO_WINDOW)
-            script = next(Path(folder).glob('*.ps1')).read_text(encoding='utf-8-sig')
+            script = next(updates.pending_path(exe).parent.glob('*.ps1')).read_text(encoding='utf-8-sig')
             self.assertIn("News Monitor''s.exe", script)
             self.assertIn('PYINSTALLER_RESET_ENVIRONMENT', script)
             self.assertIn('Get-FileHash', script)
+            self.assertIn('/VERYSILENT', script)
+            self.assertIn('-Wait -PassThru', script)
+            self.assertIn('$setup.ExitCode -ne 0', script)
             self.assertIn('Move-Item -LiteralPath $backup -Destination $target', script)
 
     @unittest.skipUnless(updates.os.name == 'nt', 'Windows helper')
     def test_tampered_pending_file_is_removed_and_not_launched(self):
         with tempfile.TemporaryDirectory() as folder:
             self.stage(folder, self.release())
-            staged = next(Path(folder).glob('.news-update-*.exe'))
+            staged = next(updates.pending_path(Path(folder) / 'NewsMonitor.exe').parent.glob('.news-update-*.exe'))
             staged.write_bytes(b'tampered')
             with patch.object(updates.sys, 'frozen', True, create=True), \
                  patch.object(updates, 'VERSION', '1.0.0'), \
@@ -154,4 +182,4 @@ class UpdateTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, '검증'):
                     updates.apply_pending(Path(folder) / 'NewsMonitor.exe')
             launch.assert_not_called()
-            self.assertFalse((Path(folder) / 'NewsMonitor.exe.pending.json').exists())
+            self.assertFalse(updates.pending_path(Path(folder) / 'NewsMonitor.exe').exists())

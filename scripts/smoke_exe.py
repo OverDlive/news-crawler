@@ -15,6 +15,7 @@ with tempfile.TemporaryDirectory(prefix='news-exe-smoke-') as directory:
     assert 'Body similarity smoke test passed' in log, log
     assert 'Institution representative preview smoke test passed' in log, log
     assert 'Bounded HTTP process timeout and recovery smoke test passed' in log, log
+    assert 'Background article view smoke test passed' in log, log
     assert 'ERROR' not in log and 'Traceback' not in log, log
     assert (Path(directory) / 'news.sqlite3').is_file()
 print('Packaged GUI smoke test passed.')

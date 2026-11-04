@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import sqlite3
 import time
 import urllib.parse
@@ -178,13 +179,20 @@ def fetch_news(keyword: str | dict, hours: int = 24) -> list[Article]:
 
 
 class Store:
-    def __init__(self, directory: Path):
-        directory.mkdir(parents=True, exist_ok=True)
+    def __init__(self, directory: Path, *, read_only=False):
+        if not read_only:
+            directory.mkdir(parents=True, exist_ok=True)
         self.directory = directory
         self.config_path = directory / "settings.json"
         self.warning = ""
-        self.db = sqlite3.connect(directory / "news.sqlite3")
+        self._rules = {}
+        self.db = (sqlite3.connect((directory / 'news.sqlite3').resolve().as_uri() + '?mode=ro',
+                                   uri=True, timeout=.25) if read_only else
+                   sqlite3.connect(directory / "news.sqlite3"))
         self.db.execute("PRAGMA foreign_keys=ON")
+        if read_only:
+            self.db.execute('PRAGMA query_only=ON')
+            return
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS articles (
                 url TEXT PRIMARY KEY, title TEXT NOT NULL, source TEXT NOT NULL,
@@ -294,21 +302,38 @@ class Store:
             WHERE m.keyword IN ({slots}) AND a.published BETWEEN ? AND ?
             ORDER BY a.published DESC, a.url
         """, (*keywords, now - hours * 3600, now + 300)).fetchall()
-        tag_rows = self.db.execute(
-            f"SELECT url, keyword FROM matches WHERE keyword IN ({slots})", keywords
-        ).fetchall()
+        if not rows:
+            return []
+        urls = [row[0] for row in rows]
+        # Only fetch auxiliary data for this view, not the entire 30-day store.
+        def related(table, columns, key='url'):
+            for offset in range(0, len(urls), 500):
+                batch = urls[offset:offset + 500]
+                slots = ','.join('?' for _ in batch)
+                yield from self.db.execute(f'SELECT {columns} FROM {table} WHERE {key} IN ({slots})', batch)
+        keyword_set = set(keywords)
         tags = {}
-        for url, keyword in tag_rows:
-            tags.setdefault(url, []).append(keyword)
+        for url, keyword in related('matches', 'url, keyword'):
+            if keyword in keyword_set:
+                tags.setdefault(url, []).append(keyword)
         names = ("url", "title", "source", "published", "description", "discovered")
         summaries = {row[0]: dict(zip(('summary', 'summary_basis', 'summary_note', 'content_url'), row[1:]))
-                     for row in self.db.execute('SELECT url, summary, basis, note, content_url FROM summaries')}
-        bodies = dict(self.db.execute('SELECT url, body FROM article_bodies'))
+                     for row in related('summaries', 'url, summary, basis, note, content_url')}
+        bodies = dict(related('article_bodies', 'url, body'))
         articles = [{**dict(zip(names, row)), **summaries.get(row[0], {}),
                      'body': bodies.get(row[0], ''),
                      "keywords": tags.get(row[0], [])} for row in rows]
         if rules is not None:
-            active_rules = {entry['name']: SearchRule(entry) for entry in rules}
+            entries = {entry['name']: entry for entry in rules}
+            self._rules = {name: cached for name, cached in self._rules.items() if name in entries}
+            active_rules = {}
+            for name in {name for article in articles for name in article['keywords']} & entries.keys():
+                entry = entries[name]
+                cached = self._rules.get(name)
+                if cached is None or cached[0] != entry:
+                    cached = (deepcopy(entry), SearchRule(entry))
+                    self._rules[name] = cached
+                active_rules[name] = cached[1]
             for article in articles:
                 article['keywords'] = [name for name in article['keywords']
                                        if name in active_rules and (not active_rules[name].filter_locally
@@ -318,8 +343,8 @@ class Store:
             return articles
         from news_similarity import fingerprint, clean_body, MIN_BODY, WINDOW
         hashes = {r['url']: fingerprint(r['body']) for r in articles if r['body']}
-        scores = {(a, b): score for a, b, ah, bh, score in self.db.execute(
-            'SELECT left_url, right_url, left_hash, right_hash, score FROM body_comparisons')
+        scores = {(a, b): score for a, b, ah, bh, score in related(
+            'body_comparisons', 'left_url, right_url, left_hash, right_hash, score', 'left_url')
                   if hashes.get(a) == ah and hashes.get(b) == bh}
         unfinished = {r['url'] for r in articles if r['url'] not in summaries}
         comparable = [r for r in articles if len(clean_body(r['body'])) >= MIN_BODY]

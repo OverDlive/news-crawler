@@ -46,6 +46,10 @@ def _http_worker(connection):
                               error.geturl(), error.code)
                 finally:
                     error.close()
+            except TimeoutError:
+                result = ('timeout',)
+            except urllib.error.URLError as error:
+                result = ('timeout',) if isinstance(error.reason, TimeoutError) else ('error',)
             except Exception:
                 # URLs and exception strings can contain bot tokens.
                 result = ('error',)
@@ -60,6 +64,7 @@ class _Worker:
     def __init__(self):
         self.process = None
         self.connection = None
+        self.last_used = 0
 
     def start(self):
         context = multiprocessing.get_context('spawn')
@@ -92,16 +97,52 @@ class _Worker:
 
 
 class HttpPool:
-    def __init__(self, workers=8):
+    def __init__(self, workers=8, idle_timeout=90):
         self.slots = [_Worker() for _ in range(workers)]
-        self.available = queue.Queue()
+        # Reuse the most recently released worker before starting an empty slot.
+        self.available = queue.LifoQueue()
         for slot in self.slots:
             self.available.put(slot)
         self.closed = False
+        self.idle_timeout = max(.05, idle_timeout)
+        self.maintenance_stop = threading.Event()
+        self.maintenance_lock = threading.Lock()
+        self.maintenance = None
+
+    def _start_maintenance(self):
+        with self.maintenance_lock:
+            if not self.closed and self.maintenance is None:
+                self.maintenance = threading.Thread(target=self._maintain, daemon=True,
+                                                    name='news-http-idle')
+                self.maintenance.start()
+
+    def _maintain(self):
+        while not self.maintenance_stop.wait(min(30, self.idle_timeout / 2)):
+            self._reap()
+
+    def _reap(self):
+        # Taking a slot out of the queue leases it exclusively, just like a
+        # request. Never kill a worker whose request is currently in flight.
+        idle = []
+        try:
+            for _ in self.slots:
+                try:
+                    slot = self.available.get_nowait()
+                except queue.Empty:
+                    break
+                idle.append(slot)
+                if self.closed or time.monotonic() - slot.last_used >= self.idle_timeout:
+                    slot.stop()
+        finally:
+            for slot in reversed(idle):
+                if self.closed:
+                    slot.stop()
+                self.available.put(slot)
 
     def request(self, request, timeout=12, max_bytes=4 * 1024 * 1024):
         if self.closed:
             raise RequestNotSent('통신 작업이 종료되었습니다')
+        self._start_maintenance()
         deadline = time.monotonic() + max(.01, timeout)
         try:
             slot = self.available.get(timeout=max(.01, timeout))
@@ -119,9 +160,12 @@ class HttpPool:
                 request = urllib.request.Request(request)
             slot.connection.send((request.full_url, request.data, dict(request.header_items()),
                                   request.get_method(), timeout, max_bytes))
-            if not slot.connection.poll(max(0, deadline - time.monotonic())):
-                raise TimeoutError('통신 전체 대기 시간 초과')
+            while not slot.connection.poll(min(.1, max(0, deadline - time.monotonic()))):
+                if self.closed or time.monotonic() >= deadline:
+                    raise TimeoutError('통신 전체 대기 시간 초과')
             result = slot.connection.recv()
+            if result[0] == 'timeout':
+                raise TimeoutError('통신 전체 대기 시간 초과')
         except RequestNotSent:
             slot.stop()
             raise
@@ -130,6 +174,9 @@ class HttpPool:
             slot.stop()
             raise TimeoutError('통신 연결 실패 또는 전체 대기 시간 초과') from None
         finally:
+            slot.last_used = time.monotonic()
+            if self.closed:
+                slot.stop()
             self.available.put(slot)
         if result[0] == 'error':
             raise urllib.error.URLError('통신 연결 실패')
@@ -143,9 +190,10 @@ class HttpPool:
 
     def close(self):
         self.closed = True
-        # Normal shutdown occurs after the GUI's daemon workers are stopped.
-        for slot in self.slots:
-            slot.stop()
+        self.maintenance_stop.set()
+        self._reap()
+        # Active requests observe closed in their bounded poll and stop their
+        # own worker. Closing another thread's pipe here would race with recv.
 
 
 class Response(BytesIO):

@@ -9,6 +9,7 @@ from search_rules import RuleError, SearchRule
 from institution_catalog import MAX_INSTITUTIONS, FINANCIAL_INSTITUTIONS
 from ui_theme import TextHint
 from smooth_list import SmoothTermList
+from ui_tasks import DebouncedCall
 
 
 def build_group_editor(app, body, draft, redraw):
@@ -221,11 +222,12 @@ def build_group_editor(app, body, draft, redraw):
             sample_result.configure(text=("포함: " + ', '.join(hits) if hits else "선택한 조건에서 제외됩니다.") if sample.get().strip() else "이름·약칭과 분류 키워드가 함께 포함되어야 합니다.")
         except RuleError as exc:
             sample_result.configure(text=str(exc))
-    sample.trace_add('write', preview)
+    schedule_preview = DebouncedCall(parent, preview)
+    sample.trace_add('write', schedule_preview)
     for variable in (name, aliases, exclude, scope, *enabled_topics.values()):
-        variable.trace_add('write', preview)
+        variable.trace_add('write', schedule_preview)
     for widget in topic_widgets.values():
-        widget.bind('<KeyRelease>', preview)
+        widget.bind('<KeyRelease>', schedule_preview)
 
     def groups():
         result = {}
@@ -234,6 +236,7 @@ def build_group_editor(app, body, draft, redraw):
                 result.setdefault(item['company'], []).append(item)
         return result
     def draw():
+        schedule_search.cancel()
         previous = tree.selection()
         position = tree.yview()[0]
         tree.delete(*tree.get_children())
@@ -268,7 +271,8 @@ def build_group_editor(app, body, draft, redraw):
         summary.configure(text=f"등록 {len(current)}개 기관 · 조건 {count}개 중 {active}개 ON · 저장하고 적용 시 반영")
         redraw()
         refresh_controls()
-    search.trace_add('write', lambda *args: draw())
+    schedule_search = DebouncedCall(parent, draw)
+    search.trace_add('write', schedule_search)
     def clear():
         selected[0] = None
         tree.selection_remove(*tree.selection())
@@ -312,6 +316,8 @@ def build_group_editor(app, body, draft, redraw):
         if not tree.selection():
             return
         company = tree.selection()[0]
+        if selected[0] == company:
+            return
         rules = groups().get(company)
         if not rules:
             return
@@ -347,17 +353,23 @@ def build_group_editor(app, body, draft, redraw):
     def current_rule():
         return next((item for item in groups().get(selected[0], [])
                      if item['category'] == category_var.get()), None)
+    controls_signature = [None]
     def refresh_controls(event=None):
         rules = groups().get(selected[0], [])
         categories = [item['category'] for item in rules]
-        category_picker.configure(values=categories, state='readonly' if rules else 'disabled')
         if category_var.get() not in categories:
             category_var.set(categories[0] if categories else '')
+        rule = next((item for item in rules if item['category'] == category_var.get()), None)
+        signature = (selected[0], tuple(categories), category_var.get(),
+                     (rule['enabled'], tuple(rule['terms']), tuple(rule.get('disabled_terms', []))) if rule else None)
+        if signature == controls_signature[0]:
+            return
+        controls_signature[0] = signature
+        category_picker.configure(values=categories, state='readonly' if rules else 'disabled')
         selected_label.configure(text=f"{selected[0]} · 분류별 모니터링" if rules else
                                   '기관을 선택하면 분류와 검색어를 켜고 끌 수 있습니다.')
         position = keyword_tree.yview()[0]
         keyword_tree.delete(*keyword_tree.get_children())
-        rule = current_rule()
         category_on.set(bool(rule and rule['enabled']))
         category_check.configure(state='normal' if rule else 'disabled',
                                  text='분류 ON' if category_on.get() else '분류 OFF')
@@ -411,8 +423,8 @@ def build_group_editor(app, body, draft, redraw):
             if len(topic_widgets) >= 12:
                 raise RuleError('분류는 최대 12개까지 추가할 수 있습니다.')
             add_topic_widget(category, terms)
-            enabled_topics[category].trace_add('write', preview)
-            topic_widgets[category].bind('<KeyRelease>', preview)
+            enabled_topics[category].trace_add('write', schedule_preview)
+            topic_widgets[category].bind('<KeyRelease>', schedule_preview)
             new_category.set('')
             new_terms.set('')
             preview()

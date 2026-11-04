@@ -149,11 +149,19 @@ class BodySharingTests(unittest.TestCase):
             app = NewsMonitor.__new__(NewsMonitor)
             app.store, app.demo, app.selected = store, False, '전체'
             app.events, app.grouping_busy = queue.Queue(), True
-            app.reload = lambda: store.list_articles(['뉴스'], now=now)
+            app.view_serial, app.view_force = 1, False
+            app.apply_view = Mock()
+            app.start_grouping = Mock()
+            def refresh(*, background, notify):
+                self.assertTrue(background and notify)
+                fresh = store.list_articles(['뉴스'], now=now)
+                app.events.put(('view_ready', app.view_serial, fresh, fresh))
+            app.reload = refresh
             app.start_notification_enqueue = Mock()
             app.notification_pending = None
             app.events.put(('grouped', compare_bodies(rows, set(), threading.Event())))
             app.process_events()
+            app.process_events()  # Consume the completed background snapshot.
             self.assertFalse(app.grouping_busy)
             self.assertIsNotNone(app.notification_pending)
             self.assertEqual(len(app.notification_pending), 1)

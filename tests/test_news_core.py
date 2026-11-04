@@ -58,6 +58,36 @@ class FeedTests(unittest.TestCase):
 
 
 class StoreTests(unittest.TestCase):
+    def test_cached_rules_follow_in_place_term_changes_and_keyword_removal(self):
+        from security_profiles import make_entries
+        rules = make_entries('기관', ['기관'], {'직접 분류': ['해킹', '장애']})
+        name = rules[0]['name']
+        self.store.ingest(name, [Article('https://example.com/cache', '기관 해킹 발생', '신문', self.now, '')], now=self.now)
+        def read():
+            return self.store.list_articles([name], now=self.now, rules=rules)
+        self.assertEqual(len(read()), 1)
+        self.assertEqual(len(read()), 1)
+        rules[0]['disabled_terms'] = ['해킹']
+        self.assertEqual(read(), [])
+        rules[0]['disabled_terms'].clear()
+        self.assertEqual(len(read()), 1)
+        rules[0]['aliases'][:] = ['다른기관']
+        self.assertEqual(read(), [])
+        rules.clear()
+        self.assertEqual(read(), [])
+
+    def test_read_only_view_connection_sees_committed_news_but_cannot_write(self):
+        import sqlite3
+        reader = Store(self.store.directory, read_only=True)
+        try:
+            self.assertEqual(reader.list_articles(['반도체'], now=self.now), [])
+            self.store.ingest('반도체', [Article('https://example.com/view', '새 기사', '신문', self.now, '')], now=self.now)
+            self.assertEqual(len(reader.list_articles(['반도체'], now=self.now)), 1)
+            with self.assertRaises(sqlite3.OperationalError):
+                reader.db.execute('DELETE FROM articles')
+        finally:
+            reader.close()
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.store = Store(Path(self.temporary.name))

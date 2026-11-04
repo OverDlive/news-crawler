@@ -144,8 +144,9 @@ class ThemedButton(tk.Canvas):
         changed = False
         for key in tuple(kwargs):
             if key in self.options:
-                self.options[key] = kwargs.pop(key)
-                changed = True
+                value = kwargs.pop(key)
+                changed = changed or self.options[key] != value
+                self.options[key] = value
         result = super().configure(cnf, **kwargs) if cnf is not None or kwargs else None
         if changed:
             super().configure(cursor="arrow" if self.options["state"] == "disabled" else "hand2")

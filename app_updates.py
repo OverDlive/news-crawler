@@ -223,10 +223,9 @@ def apply_pending(executable=None, arguments=None):
     # Windows CRT quoting is also the quoting accepted by Start-Process.
     args = subprocess.list2cmdline(list(sys.argv[1:] if arguments is None else arguments))
     installer = metadata.get('kind') == 'installer'
-    install_args = subprocess.list2cmdline([
-        '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
-        '/NOCLOSEAPPLICATIONS', '/NORESTARTAPPLICATIONS',
-        f'/DIR={executable.parent}', f'/LOG={pending.parent / "setup.log"}'])
+    install_args = ('/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- '
+                    '/NOCLOSEAPPLICATIONS /NORESTARTAPPLICATIONS '
+                    f'/DIR="{executable.parent}" /LOG="{pending.parent / "setup.log"}"')
     replacement = (f"$setup = Start-Process -FilePath $staged -ArgumentList {ps_literal(install_args)} -WindowStyle Hidden -Wait -PassThru\n"
                    "    if ($setup.ExitCode -ne 0) { throw ('Setup exit code: ' + $setup.ExitCode) }\n"
                    f"    $launchTarget = {ps_literal(executable.parent / 'NewsMonitor.exe')}\n"

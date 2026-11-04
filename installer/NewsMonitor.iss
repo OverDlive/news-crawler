@@ -55,25 +55,37 @@ Type: files; Name: "{app}\migration-source.txt"
 
 [Code]
 var
+  LegacyChoice: TInputOptionWizardPage;
   LegacyPage: TInputDirWizardPage;
 
 procedure InitializeWizard;
 var Candidate: String;
 begin
-  LegacyPage := CreateInputDirPage(wpSelectDir, '기존 데이터 가져오기',
+  LegacyChoice := CreateInputOptionPage(wpSelectDir, '기존 데이터 사용 여부',
+    '이번 PC에서 기존 설정을 가져오시겠습니까?',
+    '기존 봇 정보와 검색 조건이 있으면 데이터 가져오기를 선택하세요.', True, False);
+  LegacyChoice.Add('처음 사용합니다 (새 데이터로 시작)');
+  LegacyChoice.Add('기존 data 폴더를 가져옵니다 (백업 후 복사)');
+  LegacyChoice.SelectedValueIndex := 0;
+  LegacyPage := CreateInputDirPage(LegacyChoice.ID, '기존 데이터 가져오기',
     '기존 프로그램을 종료한 후 data 폴더를 확인하세요.',
     '첫 실행 시 전체 데이터를 백업하고 사용자 데이터 폴더로 복사합니다. 원본은 삭제하지 않습니다.' + #13#10 +
-    '기존 봇 정보와 검색 조건을 유지하려면 settings.json이 있는 data 폴더를 선택하세요. 처음 사용하는 경우 비워 두세요.', False, '');
+    '기존 봇 정보와 검색 조건을 유지하려면 settings.json이 있는 data 폴더를 선택하세요.', False, '');
   LegacyPage.Add('기존 data 폴더:');
   Candidate := ExpandConstant('{src}\data');
   if not FileExists(Candidate + '\settings.json') then
     Candidate := ExpandConstant('{src}\..\data');
-  if FileExists(Candidate + '\settings.json') then LegacyPage.Values[0] := Candidate;
+  if FileExists(Candidate + '\settings.json') then begin
+    LegacyPage.Values[0] := Candidate;
+    LegacyChoice.SelectedValueIndex := 1;
+  end;
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
-  Result := (PageID = LegacyPage.ID) and DirExists(ExpandConstant('{localappdata}\NewsMonitor\data'));
+  Result := ((PageID = LegacyChoice.ID) or (PageID = LegacyPage.ID)) and
+    (WizardSilent or DirExists(ExpandConstant('{localappdata}\NewsMonitor\data')));
+  if (PageID = LegacyPage.ID) and (LegacyChoice.SelectedValueIndex = 0) then Result := True;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -96,7 +108,8 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if (CurStep = ssPostInstall) and (LegacyPage.Values[0] <> '') and
+  if (CurStep = ssPostInstall) and (not WizardSilent) and
+    (LegacyChoice.SelectedValueIndex = 1) and (LegacyPage.Values[0] <> '') and
     not DirExists(ExpandConstant('{localappdata}\NewsMonitor\data')) then
     if not SaveStringToFile(ExpandConstant('{app}\migration-source.txt'), UTF8Encode(LegacyPage.Values[0]), False) then
       RaiseException('기존 데이터 경로를 저장하지 못했습니다.');

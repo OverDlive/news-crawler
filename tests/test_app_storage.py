@@ -13,7 +13,8 @@ class StorageTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        # Windows runners may expose TEMP through an 8.3 alias (RUNNER~1).
+        self.root = Path(self.temp.name).resolve()
         self.source = self.root / 'old' / 'data'
         self.source.mkdir(parents=True)
         self.settings = {'telegram': {'token': 'test-only', 'chat_id': '123'},

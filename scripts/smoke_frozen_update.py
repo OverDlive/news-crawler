@@ -49,11 +49,12 @@ def main():
         environment = dict(os.environ, LOCALAPPDATA=str(folder / 'profile'))
         log = data / 'monitor.log'
         process = subprocess.Popen([str(target), '--data-dir', str(data)], env=environment)
-        close = ('Get-Process -Name NewsMonitor -ErrorAction SilentlyContinue | '
-                 f'Where-Object {{ $_.Path -ieq {ps_literal(target)} }} | '
+        close = ('Get-Process | '
+                 f'Where-Object {{ $_.ProcessName -eq \'NewsMonitor\' -and $_.Path -ieq {ps_literal(target)} }} | '
                  'ForEach-Object { [void]$_.CloseMainWindow() }')
-        stop = ('Get-Process -Name NewsMonitor -ErrorAction SilentlyContinue | '
-                f'Where-Object {{ $_.Path -ieq {ps_literal(target)} }} | Stop-Process -Force')
+        stop = ('Get-Process | '
+                f'Where-Object {{ $_.ProcessName -eq \'NewsMonitor\' -and $_.Path -ieq {ps_literal(target)} }} | '
+                'Stop-Process -Force -ErrorAction SilentlyContinue')
         def powershell(command):
             return subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive',
                                    '-Command', command], check=True, timeout=10)

@@ -1,10 +1,12 @@
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
 import time
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -169,6 +171,65 @@ class UpdateTests(unittest.TestCase):
             self.assertIn('-Wait -PassThru', script)
             self.assertIn('$setup.ExitCode -ne 0', script)
             self.assertIn('Move-Item -LiteralPath $backup -Destination $target', script)
+            self.assertIn('Wait-ApplicationReadable $launchTarget $expectedHash', script)
+            self.assertLess(script.index('Wait-ApplicationReadable $launchTarget'),
+                            script.index('$launched = Start-Process'))
+            self.assertLess(script.index('$launched.WaitForExit'),
+                            script.index('Remove-Item -LiteralPath $pending'))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows file sharing')
+    def test_update_launch_waits_for_exclusive_executable_lock_to_be_released(self):
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                      ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "한글 App's.exe"
+            target.write_bytes(b'completed executable fixture')
+            handle = kernel.CreateFileW(str(target), 0x80000000, 0, None, 3, 0, None)
+            self.assertNotEqual(handle, ctypes.c_void_p(-1).value)
+            released = threading.Event()
+            def unlock():
+                try:
+                    released.wait(1.5)
+                finally:
+                    kernel.CloseHandle(handle)
+            thread = threading.Thread(target=unlock)
+            # Compute before starting the exclusive lock, using the fixture bytes.
+            expected = hashlib.sha256(b'completed executable fixture').hexdigest()
+            script = Path(folder) / 'check.ps1'
+            script.write_text("$ErrorActionPreference = 'Stop'\n" + updates.WINDOWS_LAUNCH_FUNCTIONS +
+                              f'\nWait-ApplicationReadable {updates.ps_literal(target)} {updates.ps_literal(expected)}\n',
+                              encoding='utf-8-sig')
+            thread.start()
+            started = time.monotonic()
+            try:
+                result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive',
+                                         '-ExecutionPolicy', 'Bypass', '-File', str(script)],
+                                        capture_output=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertGreaterEqual(time.monotonic() - started, 1.5)
+            finally:
+                released.set()
+                thread.join()
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows helper')
+    def test_update_launch_rejects_damaged_executable(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / 'NewsMonitor.exe'
+            target.write_bytes(b'truncated executable')
+            script = Path(folder) / 'check.ps1'
+            script.write_text("$ErrorActionPreference = 'Stop'\n" + updates.WINDOWS_LAUNCH_FUNCTIONS +
+                              f'\nWait-ApplicationReadable {updates.ps_literal(target)} {updates.ps_literal("0" * 64)} 2 10\n',
+                              encoding='utf-8-sig')
+            result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive',
+                                     '-ExecutionPolicy', 'Bypass', '-File', str(script)],
+                                    capture_output=True, timeout=10)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b'Installed executable SHA256 mismatch', result.stderr)
 
     @unittest.skipUnless(updates.os.name == 'nt', 'Windows helper')
     def test_tampered_pending_file_is_removed_and_not_launched(self):

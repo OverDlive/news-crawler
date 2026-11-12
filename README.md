@@ -5,13 +5,13 @@ Tkinter와 SQLite를 사용하며, 본문 유사도는 Python 표준 라이브�
 
 ## 실행
 
-설치형 앱 로컬 빌드는 **v1.1.14**입니다. [장시간 실행 후 Python 시작 오류 수정](releases/v1.1.14.md)을 참고하세요. 이전 성능 개선은 [v1.1.12 안내](releases/v1.1.12.md)에 있습니다.
+설치형 앱 로컬 빌드는 **v1.1.15**입니다. [자동 업데이트 직후 실행 준비 확인 보강](releases/v1.1.15.md)을 참고하세요. 장시간 실행 수정은 [v1.1.14 안내](releases/v1.1.14.md)에 있습니다.
 v1.1.11부터 GitHub Releases에는 Setup 설치 파일 하나를 배포합니다. v1.1.10 이하 또는 이전 로컬 빌드는 Setup을 한 번 직접 실행해 전환하세요.
 매일 지정한 시간의 뉴스 공유를 보류하고 종료 시각부터 모아서 전송합니다. 기본값은 한국시간 00:00~09:00이며 `공유 시간` 설정에서 변경할 수 있습니다.
 
 ### Windows EXE 실행 및 자동 업데이트
 
-Python 설치 없이 `dist/NewsMonitor-Setup-1.1.14.exe`를 실행합니다.
+Python 설치 없이 `dist/NewsMonitor-Setup-1.1.15.exe`를 실행합니다.
 약관 동의 → 설치 폴더 → 기존 data 위치 → 바탕화면 바로가기 선택 → 설치 순서입니다.
 기존 프로그램을 종료한 뒤 설치하세요. 설치 파일 옆 또는 상위 폴더의 `data/settings.json`을 자동 탐색하며,
 다른 위치에 있으면 설치 화면에서 기존 `data` 폴더를 선택합니다.
@@ -36,6 +36,7 @@ DPAPI 토큰은 기존 Windows 계정과 PC에서만 복호화됩니다.
 - 현재보다 높은 `v숫자.숫자.숫자` 버전의 Setup을 다운로드하고 GitHub 릴리스 API의 SHA-256 digest로 검증합니다. 별도 체크섬 파일은 배포하지 않습니다.
 - 다운로드 완료 후 수집·분석·알림 작업 및 열린 설정/미리보기 창이 끝나면 자동 종료 후 Setup을 무인 실행해 같은 설치 경로를 갱신하고 같은 실행 인수로 다시 시작합니다. 종료 시점에 대기 업데이트가 남아 있으면 다음 실행 때 적용합니다.
 - 기존 EXE는 `NewsMonitor.exe.previous`로 보관합니다. 파일 교체 또는 재실행 명령 실패 시 복원합니다.
+- v1.1.15부터 이전 부모 부트로더의 종료도 기다리고, 설치된 EXE의 SHA-256과 연속 읽기 성공을 확인한 뒤 다시 실행합니다. 설치기에서도 파일 검증과 대기를 수행하여 이전 버전에서 업데이트할 때 적용합니다.
 - 사용자 데이터는 교체하지 않습니다. 통신 실패 시 기존 버전으로 계속 실행하며 `data/monitor.log`에 기록합니다.
   교체 오류는 해당 업데이트 캐시의 `update.log`에 기록합니다.
 - `--no-update`로 이번 실행의 확인·적용을 건너뛸 수 있습니다. 데모·스모크 테스트·Python 소스 실행에서는 업데이트하지 않습니다.
@@ -51,9 +52,10 @@ python scripts/build_release.py --installer --iscc "C:\Program Files (x86)\Inno 
 python scripts/smoke_exe.py
 python audit/reproduce_runtime_cleanup.py
 python scripts/smoke_update.py
+python scripts/smoke_frozen_update.py
 ```
 
-Inno Setup 6 컴파일러가 필요합니다. 결과는 `dist/NewsMonitor.exe`, `dist/NewsMonitor-Setup-1.1.14.exe`와 각각의 SHA-256 검증 파일입니다. 설치기 없이 EXE만 빌드하려면 `--installer`를 생략하세요.
+Inno Setup 6 컴파일러가 필요합니다. 결과는 `dist/NewsMonitor.exe`, `dist/NewsMonitor-Setup-1.1.15.exe`와 각각의 SHA-256 검증 파일입니다. 설치기 없이 EXE만 빌드하려면 `--installer`를 생략하세요.
 신문과 검색 렌즈 모양의 프로그램 아이콘을 EXE와 창에 적용합니다.
 원본 아이콘은 `assets/news-monitor.png`, Windows용은 `assets/news-monitor.ico`입니다.
 `data/`, 토큰, 로그, 감사 결과는 EXE에 포함하지 않습니다.

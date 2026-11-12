@@ -1,6 +1,7 @@
 #ifndef AppVersion
-  #define AppVersion "1.1.14"
+  #define AppVersion "1.1.15"
 #endif
+#define AppExeSHA256 GetSHA256OfFile("..\dist\NewsMonitor.exe")
 [Setup]
 #ifdef SmokeTest
 AppId=NewsMonitor-InstallerSmokeTest
@@ -38,6 +39,7 @@ Name: "desktopicon"; Description: "바탕화면 바로가기 만들기"; Flags: 
 
 [Files]
 Source: "..\dist\NewsMonitor.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\NewsMonitor.exe.sha256"; DestDir: "{app}"; Flags: ignoreversion
 Source: "usage-terms.txt"; DestDir: "{app}"
 
 [Icons]
@@ -107,7 +109,32 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Attempt: Integer;
+  Verified: Boolean;
 begin
+  if CurStep = ssPostInstall then begin
+    { Older app versions launch as soon as Setup exits. Verify and settle here
+      too, so those clients benefit from the installation-side readiness check. }
+    Verified := False;
+    for Attempt := 1 to 20 do begin
+      try
+        if CompareText(GetSHA256OfFile(ExpandConstant('{app}\NewsMonitor.exe')), '{#AppExeSHA256}') = 0 then begin
+          Sleep(1000);
+          if CompareText(GetSHA256OfFile(ExpandConstant('{app}\NewsMonitor.exe')), '{#AppExeSHA256}') = 0 then begin
+            Verified := True;
+            Break;
+          end;
+        end;
+      except
+        Log('Waiting for installed executable to become readable: ' + GetExceptionMessage);
+      end;
+      Sleep(500);
+    end;
+    if not Verified then
+      RaiseException('설치된 실행 파일을 정상적으로 읽지 못했습니다. 설치 로그를 확인한 뒤 다시 설치하세요.');
+    Log('Installed executable SHA256 verified and readable.');
+  end;
   if (CurStep = ssPostInstall) and (not WizardSilent) and
     (LegacyChoice.SelectedValueIndex = 1) and (LegacyPage.Values[0] <> '') and
     not DirExists(ExpandConstant('{localappdata}\NewsMonitor\data')) then

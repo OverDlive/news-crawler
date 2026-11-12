@@ -49,6 +49,7 @@ jobs:
           python scripts/smoke_update.py
           python scripts/smoke_update.py --cache
           python scripts/smoke_auto_restart.py
+          python scripts/smoke_frozen_update.py
       - uses: actions/upload-artifact@v4
         with:
           name: NewsMonitor-Windows

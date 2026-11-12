@@ -21,6 +21,36 @@ from app_storage import user_directory
 
 MAX_EXE_BYTES = 150 * 1024 * 1024
 
+# Keep this check outside Python: a bootloader cannot report startup failures
+# through the application's logger. Exclusive write/delete protection during
+# the full read also detects installers/scanners that have not released the EXE.
+WINDOWS_LAUNCH_FUNCTIONS = r'''
+function Wait-ApplicationReadable($path, $expectedHash, $attempts = 40, $retryMilliseconds = 500) {
+    $lastHash = ''
+    for ($probe = 0; $probe -lt $attempts; $probe++) {
+        $stream = $null
+        $sha = $null
+        try {
+            $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            $actualHash = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+            if ($actualHash -ne $expectedHash) { throw 'Installed executable SHA256 mismatch' }
+            if ($lastHash -eq $actualHash) { return }
+            $lastHash = $actualHash
+        } catch {
+            $lastHash = ''
+            if ($probe -eq ($attempts - 1)) { throw }
+        } finally {
+            if ($sha) { $sha.Dispose() }
+            if ($stream) { $stream.Dispose() }
+        }
+        Start-Sleep -Milliseconds $retryMilliseconds
+    }
+    throw 'Installed executable did not become readable and stable'
+}
+'''
+
 
 def version_tuple(value):
     match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", value)
@@ -229,8 +259,11 @@ def apply_pending(executable=None, arguments=None):
     replacement = (f"$setup = Start-Process -FilePath $staged -ArgumentList {ps_literal(install_args)} -WindowStyle Hidden -Wait -PassThru\n"
                    "    if ($setup.ExitCode -ne 0) { throw ('Setup exit code: ' + $setup.ExitCode) }\n"
                    f"    $launchTarget = {ps_literal(executable.parent / 'NewsMonitor.exe')}\n"
-                   "    if (-not (Test-Path -LiteralPath $launchTarget)) { throw 'Installed executable missing' }") if installer else (
-                       'Copy-Item -LiteralPath $staged -Destination $target\n    $launchTarget = $target')
+                   "    if (-not (Test-Path -LiteralPath $launchTarget)) { throw 'Installed executable missing' }\n"
+                   "    $expectedHash = (Get-Content -LiteralPath ($launchTarget + '.sha256') -Raw).Trim().Split(' ')[0]\n"
+                   "    if ($expectedHash -notmatch '^[a-fA-F0-9]{64}$') { throw 'Installed executable checksum missing' }") if installer else (
+                       f'Copy-Item -LiteralPath $staged -Destination $target\n    $launchTarget = $target\n'
+                       f'    $expectedHash = {ps_literal(metadata["sha256"])}')
     script = f"""$ErrorActionPreference = 'Stop'
 # Launching from PowerShell 7 can otherwise inherit incompatible module paths.
 $env:PSModulePath = "$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\Modules"
@@ -238,11 +271,18 @@ $target = {ps_literal(executable)}
 $staged = {ps_literal(staged)}
 $backup = {ps_literal(backup)}
 $pending = {ps_literal(pending)}
+$applying = $pending + '.applying'
 $log = {ps_literal(log)}
+{WINDOWS_LAUNCH_FUNCTIONS}
 Wait-Process -Id {os.getpid()} -ErrorAction SilentlyContinue
-$installed = $false
 $backedUp = $false
 try {{
+    # A one-file app has a second parent bootloader process. Waiting only for
+    # the Python GUI PID can race with its cleanup and executable handles.
+    $previousBootloader = Get-Process -Id {os.getppid()} -ErrorAction SilentlyContinue
+    if ($previousBootloader -and $previousBootloader.Path -ieq $target) {{
+        if (-not $previousBootloader.WaitForExit(30000)) {{ throw 'Previous bootloader did not exit' }}
+    }}
     if ((Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash.ToLower() -ne {ps_literal(metadata['sha256'])}) {{ throw 'SHA256 mismatch' }}
     for ($attempt = 0; $attempt -lt 60; $attempt++) {{
         try {{
@@ -256,17 +296,21 @@ try {{
         }}
     }}
     {replacement}
-    Remove-Item -LiteralPath $staged
-    $installed = $true
-    Remove-Item -LiteralPath $pending
+    Wait-ApplicationReadable $launchTarget $expectedHash
+    # The new process must not see the same pending update on startup.
+    Move-Item -LiteralPath $pending -Destination $applying -Force
     $env:PYINSTALLER_RESET_ENVIRONMENT = '1'
-    {"Start-Process -FilePath $launchTarget -ArgumentList " + ps_literal(args) + " -WindowStyle Hidden" if args else "Start-Process -FilePath $launchTarget -WindowStyle Hidden"}
+    $launched = {"Start-Process -FilePath $launchTarget -ArgumentList " + ps_literal(args) + " -WindowStyle Hidden -PassThru" if args else "Start-Process -FilePath $launchTarget -WindowStyle Hidden -PassThru"}
+    if ($launched.WaitForExit(3000) -and $launched.ExitCode -ne 0) {{ throw ('Application exit code: ' + $launched.ExitCode) }}
+    Remove-Item -LiteralPath $applying -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $staged -ErrorAction SilentlyContinue
 }} catch {{
     $env:PYINSTALLER_RESET_ENVIRONMENT = '1'
     $_ | Out-File -LiteralPath $log -Append -Encoding utf8
     if ($backedUp -and (Test-Path -LiteralPath $target)) {{ Remove-Item -LiteralPath $target }}
     if ($backedUp -and (Test-Path -LiteralPath $backup)) {{ Move-Item -LiteralPath $backup -Destination $target }}
     Remove-Item -LiteralPath $pending -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $applying -ErrorAction SilentlyContinue
     {"Start-Process -FilePath $target -ArgumentList " + ps_literal(args) + " -WindowStyle Hidden" if args else "Start-Process -FilePath $target -WindowStyle Hidden"}
 }} finally {{
     Remove-Item -LiteralPath $PSCommandPath -ErrorAction SilentlyContinue

@@ -42,6 +42,8 @@ jobs:
         run: python scripts/build_release.py --installer --version "$env:RELEASE_TAG" --repository "$env:RELEASE_REPO"
       - name: Verify packaged GUI
         run: python scripts/smoke_exe.py
+      - name: Verify worker restart after temporary file cleanup
+        run: python audit/reproduce_runtime_cleanup.py
       - name: Verify real update replacement and restart
         run: |
           python scripts/smoke_update.py

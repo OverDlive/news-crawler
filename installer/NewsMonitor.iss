@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "1.1.12"
+  #define AppVersion "1.1.14"
 #endif
 [Setup]
 #ifdef SmokeTest

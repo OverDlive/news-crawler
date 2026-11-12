@@ -1625,6 +1625,9 @@ def main():
     logging.basicConfig(level=logging.INFO, handlers=[RotatingFileHandler(
         directory / "monitor.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")],
         format="%(asctime)s %(levelname)s %(message)s")
+    runtime_directory = getattr(sys, '_MEIPASS', None)
+    if runtime_directory is not None:
+        logging.info('Embedded Python runtime directory: %s', runtime_directory)
     updates_enabled = getattr(sys, 'frozen', False) and not (args.demo or args.smoke_test or args.no_update)
     if updates_enabled:
         try:

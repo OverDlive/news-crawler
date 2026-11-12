@@ -24,6 +24,8 @@ def verify(executable):
     from PyInstaller.archive.readers import CArchiveReader
     from version import VERSION
     archive = CArchiveReader(str(executable))
+    assert ('pyi-runtime-tmpdir %LOCALAPPDATA%\\NewsMonitor\\runtime' in archive.options), \
+        'Embedded Python must be extracted outside the system temporary directory'
     pyz = archive.open_embedded_archive('PYZ.pyz')
     instructions = list(dis.get_instructions(pyz.extract('version')))
     version = next(a.argval for a, b in zip(instructions, instructions[1:])

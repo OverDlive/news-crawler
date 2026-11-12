@@ -20,6 +20,11 @@ a = Analysis(['app.py'], pathex=[SPECPATH], binaries=[], datas=extra_data,
                        'dask', 'IPython', 'pytest'], noarchive=False)
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name='NewsMonitor',
+          # HTTP workers spawn again after idle expiry/timeouts. Keep their
+          # shared Python runtime out of TEMP, where periodic cleanup can
+          # remove base_library.zip while the GUI is still running. Expansion
+          # happens in the Windows bootloader, before Python can execute.
+          runtime_tmpdir=r'%LOCALAPPDATA%\NewsMonitor\runtime',
           debug=False, bootloader_ignore_signals=False, strip=False, upx=False,
           console=False, disable_windowed_traceback=False,
           icon=str(Path(SPECPATH) / 'assets' / 'news-monitor.ico'))

@@ -5,13 +5,13 @@ Tkinter와 SQLite를 사용하며, 본문 유사도는 Python 표준 라이브�
 
 ## 실행
 
-설치형 앱 로컬 빌드는 **v1.1.12**입니다. [저사양 PC 성능 개선 및 적용 안내](releases/v1.1.12.md)를 참고하세요. 이전 설치형 앱 변경은 [v1.1.11 안내](releases/v1.1.11.md)에 있습니다.
+설치형 앱 로컬 빌드는 **v1.1.14**입니다. [장시간 실행 후 Python 시작 오류 수정](releases/v1.1.14.md)을 참고하세요. 이전 성능 개선은 [v1.1.12 안내](releases/v1.1.12.md)에 있습니다.
 v1.1.11부터 GitHub Releases에는 Setup 설치 파일 하나를 배포합니다. v1.1.10 이하 또는 이전 로컬 빌드는 Setup을 한 번 직접 실행해 전환하세요.
 매일 지정한 시간의 뉴스 공유를 보류하고 종료 시각부터 모아서 전송합니다. 기본값은 한국시간 00:00~09:00이며 `공유 시간` 설정에서 변경할 수 있습니다.
 
 ### Windows EXE 실행 및 자동 업데이트
 
-Python 설치 없이 `dist/NewsMonitor-Setup-1.1.12.exe`를 실행합니다.
+Python 설치 없이 `dist/NewsMonitor-Setup-1.1.14.exe`를 실행합니다.
 약관 동의 → 설치 폴더 → 기존 data 위치 → 바탕화면 바로가기 선택 → 설치 순서입니다.
 기존 프로그램을 종료한 뒤 설치하세요. 설치 파일 옆 또는 상위 폴더의 `data/settings.json`을 자동 탐색하며,
 다른 위치에 있으면 설치 화면에서 기존 `data` 폴더를 선택합니다.
@@ -20,6 +20,7 @@ Python 설치 없이 `dist/NewsMonitor-Setup-1.1.12.exe`를 실행합니다.
 - 설정·기사·봇 데이터: `%LOCALAPPDATA%\NewsMonitor\data`
 - 최초 이전 백업: `%LOCALAPPDATA%\NewsMonitor\backups\날짜-고유번호`
 - 업데이트 임시 파일: `%LOCALAPPDATA%\NewsMonitor\updates`
+- 실행용 Python 파일: `%LOCALAPPDATA%\NewsMonitor\runtime\_MEI...` (실행별 분리, 정상 종료 시 정리)
 
 첫 실행 시 전체 데이터를 백업·검증한 뒤 새 위치에 복사합니다. 원본은 삭제하지 않으며,
 이미 새 데이터 폴더가 있으면 덮어쓰지 않습니다. 이전 실패 시 초기 설정으로 시작하지 않고 오류를 표시합니다.
@@ -48,10 +49,11 @@ Windows에서 Python 3.12와 Tkinter를 사용합니다. 소스 실행 전 `pyth
 python -m pip install -r requirements-build.txt
 python scripts/build_release.py --installer --iscc "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 python scripts/smoke_exe.py
+python audit/reproduce_runtime_cleanup.py
 python scripts/smoke_update.py
 ```
 
-Inno Setup 6 컴파일러가 필요합니다. 결과는 `dist/NewsMonitor.exe`, `dist/NewsMonitor-Setup-1.1.12.exe`와 각각의 SHA-256 검증 파일입니다. 설치기 없이 EXE만 빌드하려면 `--installer`를 생략하세요.
+Inno Setup 6 컴파일러가 필요합니다. 결과는 `dist/NewsMonitor.exe`, `dist/NewsMonitor-Setup-1.1.14.exe`와 각각의 SHA-256 검증 파일입니다. 설치기 없이 EXE만 빌드하려면 `--installer`를 생략하세요.
 신문과 검색 렌즈 모양의 프로그램 아이콘을 EXE와 창에 적용합니다.
 원본 아이콘은 `assets/news-monitor.png`, Windows용은 `assets/news-monitor.ico`입니다.
 `data/`, 토큰, 로그, 감사 결과는 EXE에 포함하지 않습니다.

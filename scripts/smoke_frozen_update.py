@@ -26,7 +26,9 @@ def main():
     parser.add_argument('--source-exe', type=Path, default=ROOT / 'dist/NewsMonitor.exe')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='news-frozen-update-') as directory:
-        folder = Path(directory)
+        # GitHub runners expose TEMP through RUNNER~1, but Get-Process.Path
+        # reports the long path. Normalize before matching owned processes.
+        folder = Path(directory).resolve()
         target = folder / "한글 App's" / 'NewsMonitor.exe'
         target.parent.mkdir()
         shutil.copy2(args.source_exe, target)
@@ -68,7 +70,7 @@ def main():
                 raise AssertionError(error.read_text(encoding='utf-8-sig') if error.exists()
                                      else 'Frozen update did not restart')
             process.wait(timeout=10)
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
                 if (not pending.exists() and not Path(str(pending) + '.applying').exists()
                         and 'News monitor closing' in log.read_text(encoding='utf-8')):
@@ -85,6 +87,19 @@ def main():
             if process.poll() is None:
                 process.kill()
                 process.wait()
+            # Stop-Process returns before all inherited file handles are closed.
+            deadline = time.monotonic() + 5
+            while target.exists() and time.monotonic() < deadline:
+                try:
+                    with target.open('ab'):
+                        pass
+                    # The EXE may release its image before the log flush.
+                    if log.exists():
+                        with log.open('ab'):
+                            pass
+                    break
+                except PermissionError:
+                    time.sleep(.1)
     print('Real frozen parent exit, installer readiness and GUI restart passed.')
 
 
